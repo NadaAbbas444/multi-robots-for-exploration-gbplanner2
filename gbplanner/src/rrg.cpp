@@ -1219,7 +1219,9 @@ bool Rrg::publishInspectionPath(const std::vector<geometry_msgs::Pose>& path) {
   insp_goal_ = Eigen::Vector3d(out.back().position.x, out.back().position.y,
                                out.back().position.z);
   const double expected = length / std::max(0.1, planning_params_.v_max);
-  insp_deadline_ = ros::Time::now() + ros::Duration(expected + insp_timeout_margin_);
+  // Tours turn at every viewpoint, so with the tracker's acceleration and
+  // yaw-rate limits the average speed is well below v_max: allow ~60% of it.
+  insp_deadline_ = ros::Time::now() + ros::Duration(expected / 0.6 + insp_timeout_margin_);
   // A closed tour ends next to where it starts, so "at the end point" alone
   // is not completion: also require most of the expected flight time.
   insp_earliest_done_ = ros::Time::now() + ros::Duration(0.8 * expected);

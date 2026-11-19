@@ -27,7 +27,8 @@ Project page: https://nadaabbas444.github.io/multi-robots-for-exploration-gbplan
 
 Everything runs in Docker (Ubuntu 20.04, ROS Noetic, Gazebo 11, ArduPilot SITL
 via the [LARICS UAV simulation stack](https://github.com/larics/uav_ros_simulation)).
-The host only needs Docker and an X server. About 20 GB of disk is needed.
+The host needs Docker, an X server and `git-lfs` (`sudo apt install git-lfs`,
+for the cave models), plus about 20 GB of disk.
 
 ```bash
 # 1. workspace + sources (dependencies are pinned, see workspace/deps.repos)
