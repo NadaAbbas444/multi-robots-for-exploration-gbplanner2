@@ -357,6 +357,34 @@ bool validateGraph();
 
     ros::Subscriber other_graph_sub_; // Declare the subscriber
 
+  // --- No-Go Zones (ICUAS 2025, Sec. IV-A3) -------------------------------
+  // A No-Go Zone is a uniform cube of half-size no_go_zone_radius_ centred on
+  // a goal this robot (or a peer) already selected. Paths may cross a zone,
+  // but no frontier inside one is ever selected for exploration.
+  struct NoGoZone {
+    Eigen::Vector3d center;
+    std::string owner;
+  };
+  void addOwnNoGoZone(const Eigen::Vector3d& center);
+  void peerNoGoZonesCallback(const geometry_msgs::PoseArray::ConstPtr& msg,
+                             const std::string& peer_ns);
+  bool isInsideNoGoZone(const Eigen::Vector3d& p) const;
+  void applyNoGoZonesToLocalGraph();
+  int pruneGlobalFrontiersInNoGoZones();
+  void publishOwnNoGoZones();
+
+  bool no_go_zones_enable_ = true;
+  double no_go_zone_radius_ = 3.0;
+  double no_go_zone_min_spacing_ = 1.5;
+  bool no_go_apply_own_zones_ = false;
+  std::string robot_ns_;
+  std::vector<std::string> peer_namespaces_;
+  std::vector<NoGoZone> no_go_zones_;
+  mutable std::mutex no_go_mutex_;
+  ros::Publisher no_go_zones_pub_;
+  std::vector<ros::Subscriber> peer_graph_subs_;
+  std::vector<ros::Subscriber> peer_no_go_subs_;
+
   tf::TransformListener* listener_;
   // ros::Subscriber points_sub_;
   ros::Publisher adjusted_points_pub_; 

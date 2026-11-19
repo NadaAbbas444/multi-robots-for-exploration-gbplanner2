@@ -44,16 +44,19 @@ gbplanner_panel::gbplanner_panel(QWidget* parent) : rviz::Panel(parent) {
             [this, namespace_selector](int index) {
                 this->updateServiceClients(namespace_selector->currentText());
             });
+
+    // Bind clients for the default selection so the buttons work immediately.
+    updateServiceClients(namespace_selector->currentText());
 }
 
 void gbplanner_panel::updateServiceClients(const QString& ns) {
-    std::string base_service_path = ns.toStdString() + "/planner_control_interface/";
+    std::string base_service_path = "/" + ns.toStdString() + "/planner_control_interface/";
     planner_client_start_planner = nh.serviceClient<std_srvs::Trigger>(base_service_path + "std_srvs/automatic_planning");
     planner_client_stop_planner = nh.serviceClient<std_srvs::Trigger>(base_service_path + "std_srvs/stop");
     planner_client_homing = nh.serviceClient<std_srvs::Trigger>(base_service_path + "std_srvs/homing_trigger");
-    planner_client_init_motion = nh.serviceClient<planner_msgs::pci_initialization>(ns.toStdString() + "/pci_initialization_trigger");
+    planner_client_init_motion = nh.serviceClient<planner_msgs::pci_initialization>("/" + ns.toStdString() + "/pci_initialization_trigger");
     planner_client_plan_to_waypoint = nh.serviceClient<std_srvs::Trigger>(base_service_path + "std_srvs/go_to_waypoint");
-    planner_client_global_planner = nh.serviceClient<planner_msgs::pci_global>(ns.toStdString() + "/pci_global");
+    planner_client_global_planner = nh.serviceClient<planner_msgs::pci_global>("/" + ns.toStdString() + "/pci_global");
 }
 
 void gbplanner_panel::on_start_planner_click() {

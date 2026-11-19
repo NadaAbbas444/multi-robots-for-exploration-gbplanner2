@@ -14,18 +14,17 @@ include_directories(
   ${Boost_INCLUDE_DIRS}
   ${Eigen_INCLUDE_DIRS}
   ${planner_common_INCLUDE_DIRS}
-  /home/nadaabbas/matplotplusplus/include
 )
 
-
-# Include Matplot++
-add_subdirectory(/home/nadaabbas/matplotplusplus /home/nadaabbas/matplotplusplus/build)
+# Matplot++ is optional: only needed for plots_visualizer_node.
+find_package(Matplot++ QUIET)
 
 cs_add_library(
   ${PROJECT_NAME}
   src/gbplanner.cpp
   src/rrg.cpp
   src/gbplanner_rviz.cpp
+  src/lkh_tsp.cpp
 )
 
 add_executable(trajectory_transformer src/trajectory_transformer.cpp)
@@ -52,11 +51,20 @@ target_link_libraries(Dynamic_Auction
   ${Boost_LIBRARIES}   # Only needed if you actually use Boost in your code
 )
 
-add_executable(plots_visualizer_node src/plots_visualizer_node.cpp)
-target_link_libraries(plots_visualizer_node
-  ${catkin_LIBRARIES}
-  matplot
-)
+if(Matplot++_FOUND)
+  add_executable(plots_visualizer_node src/plots_visualizer_node.cpp)
+  target_link_libraries(plots_visualizer_node
+    ${catkin_LIBRARIES}
+    Matplot++::matplot
+  )
+else()
+  message(STATUS "Matplot++ not found: skipping plots_visualizer_node")
+endif()
+
+# Plain executables must wait for generated message/service headers.
+foreach(_exe trajectory_transformer p2p dta_node Dynamic_Auction)
+  add_dependencies(${_exe} ${catkin_EXPORTED_TARGETS})
+endforeach()
 
 cs_add_executable(gbplanner_node src/gbplanner_ros_node.cpp)
 target_link_libraries(gbplanner_node ${PROJECT_NAME} ${planner_common_LIBRARIES})

@@ -7,11 +7,13 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
+#ifndef Q_MOC_RUN
 #include <rviz/panel.h>
 #include <ros/ros.h>
 #include <std_srvs/Trigger.h>
 #include <planner_msgs/pci_global.h>
 #include <planner_msgs/pci_initialization.h>
+#endif
 
 namespace gbplanner_ui {
 

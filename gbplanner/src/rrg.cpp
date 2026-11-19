@@ -1,4 +1,5 @@
 #include "gbplanner/rrg.h"
+#include "gbplanner/lkh_tsp.h"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/opencv.hpp>
@@ -107,9 +108,31 @@ void Rrg::initializeAttributes(const std::string& ns) {
   near_obstacle = nh_.advertise<trajectory_msgs::MultiDOFJointTrajectory>(ns + "/near_obstacle", 10);
 
   // Determine the namespace and set up subscribers accordingly
-  std::string local_ns = ns.empty() ? "red" : ns.substr(1);  // Assumes ns is either "/red" or "/blue"
- std::string other_robot_ns = (ns == "/red") ? "/blue" : "/red";  // Assuming the namespace for the other robot
-  other_graph_sub_ = nh_.subscribe(other_robot_ns + "/local_graph", 10, &Rrg::otherRobotGraphCallback, this);
+  // Peer-to-peer coordination. Peers come from the private param
+  // ~peer_namespaces (e.g. ["/blue", "/green"]); without it we fall back to
+  // the original two-robot red/blue setup.
+  robot_ns_ = ns.empty() ? "/red" : ns;
+  nh_private_.param("no_go_zones/enable", no_go_zones_enable_, true);
+  nh_private_.param("no_go_zones/radius", no_go_zone_radius_, 3.0);
+  nh_private_.param("no_go_zones/min_spacing", no_go_zone_min_spacing_, 1.5);
+  nh_private_.param("no_go_zones/apply_own_zones", no_go_apply_own_zones_, false);
+  if (!nh_private_.getParam("peer_namespaces", peer_namespaces_) ||
+      peer_namespaces_.empty()) {
+    peer_namespaces_ = {(robot_ns_ == "/red") ? "/blue" : "/red"};
+  }
+  no_go_zones_pub_ = nh_.advertise<geometry_msgs::PoseArray>(
+      robot_ns_ + "/no_go_zones", 1, /*latch=*/true);
+  for (std::string peer : peer_namespaces_) {
+    if (peer.empty()) continue;
+    if (peer[0] != '/') peer = "/" + peer;
+    if (peer == robot_ns_) continue;
+    peer_graph_subs_.push_back(nh_.subscribe(
+        peer + "/local_graph", 10, &Rrg::otherRobotGraphCallback, this));
+    peer_no_go_subs_.push_back(nh_.subscribe<geometry_msgs::PoseArray>(
+        peer + "/no_go_zones", 10,
+        boost::bind(&Rrg::peerNoGoZonesCallback, this, _1, peer)));
+    ROS_INFO("[%s] p2p peer: %s", robot_ns_.c_str(), peer.c_str());
+  }
 
   local_graph_pub_ = nh_.advertise<planner_msgs::Graph>(ns + "/local_graph", 10);
 
@@ -877,7 +900,7 @@ selected_points.erase(std::remove_if(selected_points.begin(), selected_points.en
     return v->state[0] == 0 && v->state[1] == 0;
 }), selected_points.end());
 
-// Solve TSP using a simple nearest neighbor heuristic
+// Pairwise Euclidean distances between the inspection viewpoints
 int n = selected_points.size();
 Eigen::MatrixXd dist_matrix(n, n);
 for (int i = 0; i < n; ++i) {
@@ -886,28 +909,16 @@ for (int i = 0; i < n; ++i) {
     }
 }
 
-// Nearest neighbor heuristic for TSP
+// Shortest closed tour through all viewpoints: Lin-Kernighan-Helsgaun (LKH-3).
 std::vector<Vertex*> tsp_path;
-std::vector<bool> visited(n, false);
-int current = 0;
-tsp_path.push_back(selected_points[current]);
-visited[current] = true;
-for (int step = 1; step < n; ++step) {
-    double min_dist = std::numeric_limits<double>::max();
-    int next = -1;
-    for (int i = 0; i < n; ++i) {
-        if (!visited[i] && dist_matrix(current, i) < min_dist) {
-            min_dist = dist_matrix(current, i);
-            next = i;
-        }
-    }
-    if (next != -1) {
-        tsp_path.push_back(selected_points[next]);
-        visited[next] = true;
-        current = next;
-    }
+if (n > 0) {
+  std::vector<int> order;
+  std::string lkh_bin;
+  nh_private_.param<std::string>("inspection/lkh_binary", lkh_bin, "LKH");
+  explorer::lkh::solveTsp(dist_matrix, 0, order, lkh_bin);
+  for (int idx : order) tsp_path.push_back(selected_points[idx]);
+  tsp_path.push_back(selected_points[order.front()]);  // close the cycle
 }
-tsp_path.push_back(selected_points[0]);  // Return to the starting point to complete the cycle
 
 // Convert the path to geometry_msgs::Pose and prepare for publishing
 std::vector<geometry_msgs::Pose> pathPoses;
@@ -2820,6 +2831,109 @@ void Rrg::otherRobotGraphCallback(const planner_msgs::Graph& graph_msg) {
 }
 
 
+// ---------------------------------------------------------------------------
+// No-Go Zones
+// ---------------------------------------------------------------------------
+void Rrg::addOwnNoGoZone(const Eigen::Vector3d& center) {
+  if (!no_go_zones_enable_) return;
+  {
+    std::lock_guard<std::mutex> lock(no_go_mutex_);
+    for (const auto& z : no_go_zones_) {
+      if (z.owner == robot_ns_ &&
+          (z.center - center).norm() < no_go_zone_min_spacing_)
+        return;  // already covered by an existing zone
+    }
+    no_go_zones_.push_back({center, robot_ns_});
+  }
+  publishOwnNoGoZones();
+}
+
+void Rrg::publishOwnNoGoZones() {
+  geometry_msgs::PoseArray msg;
+  msg.header.stamp = ros::Time::now();
+  msg.header.frame_id = world_frame_;
+  {
+    std::lock_guard<std::mutex> lock(no_go_mutex_);
+    for (const auto& z : no_go_zones_) {
+      if (z.owner != robot_ns_) continue;
+      geometry_msgs::Pose p;
+      p.position.x = z.center.x();
+      p.position.y = z.center.y();
+      p.position.z = z.center.z();
+      p.orientation.w = 1.0;
+      msg.poses.push_back(p);
+    }
+  }
+  no_go_zones_pub_.publish(msg);
+}
+
+void Rrg::peerNoGoZonesCallback(const geometry_msgs::PoseArray::ConstPtr& msg,
+                                const std::string& peer_ns) {
+  if (!no_go_zones_enable_) return;
+  // The peer always sends its full (latched) list: replace what we had.
+  int count = 0;
+  {
+    std::lock_guard<std::mutex> lock(no_go_mutex_);
+    no_go_zones_.erase(
+        std::remove_if(no_go_zones_.begin(), no_go_zones_.end(),
+                       [&](const NoGoZone& z) { return z.owner == peer_ns; }),
+        no_go_zones_.end());
+    for (const auto& p : msg->poses) {
+      no_go_zones_.push_back(
+          {Eigen::Vector3d(p.position.x, p.position.y, p.position.z), peer_ns});
+      ++count;
+    }
+  }
+  int pruned = pruneGlobalFrontiersInNoGoZones();
+  ROS_INFO_THROTTLE(5.0, "[%s] %d No-Go Zones from %s, pruned %d frontiers",
+                    robot_ns_.c_str(), count, peer_ns.c_str(), pruned);
+}
+
+bool Rrg::isInsideNoGoZone(const Eigen::Vector3d& p) const {
+  if (!no_go_zones_enable_) return false;
+  std::lock_guard<std::mutex> lock(no_go_mutex_);
+  for (const auto& z : no_go_zones_) {
+    if (!no_go_apply_own_zones_ && z.owner == robot_ns_) continue;
+    if (((p - z.center).cwiseAbs().array() <= no_go_zone_radius_).all())
+      return true;
+  }
+  return false;
+}
+
+void Rrg::applyNoGoZonesToLocalGraph() {
+  if (!no_go_zones_enable_ || !local_graph_) return;
+  int zeroed = 0;
+  for (auto& kv : local_graph_->vertices_map_) {
+    Vertex* v = kv.second;
+    if (!v) continue;
+    if (isInsideNoGoZone(v->state.head(3))) {
+      v->vol_gain.gain = 0.0;
+      v->vol_gain.is_frontier = false;
+      if (v->type == VertexType::kFrontier) v->type = VertexType::kUnvisited;
+      ++zeroed;
+    }
+  }
+  if (zeroed > 0)
+    ROS_INFO("[%s] No-Go Zones: zero gain on %d local vertices",
+             robot_ns_.c_str(), zeroed);
+}
+
+int Rrg::pruneGlobalFrontiersInNoGoZones() {
+  if (!no_go_zones_enable_ || !global_graph_) return 0;
+  std::lock_guard<std::mutex> lock(global_graph_mutex);
+  int pruned = 0;
+  for (int id = 0; id < global_graph_->getNumVertices(); ++id) {
+    Vertex* v = global_graph_->getVertex(id);
+    if (v && v->type == VertexType::kFrontier &&
+        isInsideNoGoZone(v->state.head(3))) {
+      v->type = VertexType::kUnvisited;
+      v->vol_gain.is_frontier = false;
+      ++pruned;
+    }
+  }
+  return pruned;
+}
+
 void Rrg::addFrontiers(int best_vertex_id) {
   // Add frontiers to the graph.
   // 1) Check and mark if any vertex is potential frontier and leaf vertices.
@@ -3686,6 +3800,7 @@ void Rrg::computeExplorationGain(bool only_leaf_vertices) {
     }
     if (v.second->vol_gain.is_frontier) v.second->type = VertexType::kFrontier;
   }
+  applyNoGoZonesToLocalGraph();
   stat_->compute_exp_gain_time = GET_ELAPSED_TIME(tim);
   t2 = std::chrono::high_resolution_clock::now();
   stat_chrono_->compute_exp_gain_time =
@@ -3752,6 +3867,7 @@ void Rrg::computeExplorationGain(bool only_leaf_vertices, bool clustering) {
     if (vertex_map[v_id]->vol_gain.is_frontier)
       vertex_map[v_id]->type = VertexType::kFrontier;
   }
+  applyNoGoZonesToLocalGraph();
   ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Num clusters: %d", num_clusters);
   stat_->compute_exp_gain_time = GET_ELAPSED_TIME(tim);
   t2 = std::chrono::high_resolution_clock::now();
@@ -4780,6 +4896,13 @@ std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
   }
 
   visualization_->visualizeRefPath(ret);
+
+  // The goal of this local path becomes a No-Go Zone shared with peers.
+  if (!ret.empty()) {
+    addOwnNoGoZone(Eigen::Vector3d(ret.back().position.x,
+                                   ret.back().position.y,
+                                   ret.back().position.z));
+  }
 
   return ret;
 }
@@ -5834,6 +5957,8 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
     if (global_graph_->getVertex(id)->type == VertexType::kFrontier) {
       Vertex* v = global_graph_->getVertex(id);
       computeVolumetricGainRayModelNoBound(v->state, v->vol_gain);
+      if (v->vol_gain.is_frontier && isInsideNoGoZone(v->state.head(3)))
+        v->vol_gain.is_frontier = false;  // already covered by a peer
       if (!v->vol_gain.is_frontier)
         v->type = VertexType::kUnvisited;
       else
