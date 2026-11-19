@@ -2934,11 +2934,8 @@ void Rrg::otherRobotGraphCallback(const planner_msgs::Graph& graph_msg) {
     // ROS_INFO_STREAM("Maximum vertex ID in global graph: " << max_id);
     // ROS_INFO_STREAM(nh_.getNamespace() << ": before Receiving " << frontier_count << " originally");
 
-    // If the maximum vertex ID is 0, this might indicate the graph is not meaningfully populated
-    if (max_id == 0) {
-        // ROS_INFO("Global graph has a maximum vertex ID of 0, indicating it might be empty or trivial. Skipping integration.");
-        return;
-    }
+    // (Previously skipped when the own graph had only its root, so an
+    // inspector that had not moved yet never learned any peer path.)
 
     // Remap vertex IDs in the incoming graph
     planner_msgs::Graph remapped_graph = graph_msg;
@@ -2949,6 +2946,37 @@ void Rrg::otherRobotGraphCallback(const planner_msgs::Graph& graph_msg) {
 
     // Convert the remapped graph to the global graph
     global_graph_->convertMsgToGraph(remapped_graph);
+
+    // Link the received key paths to the rest of the global graph: each new
+    // vertex gets an edge to its nearest existing vertex within kLinkRadius
+    // whose connection is not blocked in this robot's map (the peer already
+    // collision-checked its own edges). Without these links peer paths were
+    // isolated islands that path search could never use.
+    const double kLinkRadius = 3.0;
+    std::unordered_set<int> incoming;
+    for (const auto& v : remapped_graph.vertices) incoming.insert(v.id);
+    int links = 0;
+    for (const auto& vm : remapped_graph.vertices) {
+        Vertex* v = global_graph_->getVertex(vm.id);
+        if (!v) continue;
+        std::vector<Vertex*> near;
+        if (!global_graph_->getNearestVertices(&v->state, kLinkRadius, &near)) continue;
+        Vertex* best = nullptr;
+        double best_d = kLinkRadius;
+        for (Vertex* u : near) {
+            if (!u || incoming.count(u->id)) continue;
+            const double d = (u->state.head(3) - v->state.head(3)).norm();
+            if (d < best_d &&
+                map_manager_->getPathStatus(u->state.head(3), v->state.head(3),
+                                            robot_box_size_, false) !=
+                    MapManager::VoxelStatus::kOccupied) {
+                best = u; best_d = d;
+            }
+        }
+        if (best) { global_graph_->addEdge(v, best, std::max(best_d, 1e-3)); ++links; }
+    }
+    ROS_INFO_THROTTLE(10.0, "[p2p] merged peer graph: %zu vertices, %d links",
+                      remapped_graph.vertices.size(), links);
 
     // int frontier_count_after_pushing_coming_graph = 0;
 
