@@ -123,7 +123,9 @@
 
   </group>
   <!-- Node for frontier assignment -->
-<node name="Dynamic_Auction" pkg="gbplanner" type="Dynamic_Auction" output="screen"/>
+<node name="Dynamic_Auction" pkg="gbplanner" type="Dynamic_Auction" output="screen">
+  <rosparam command="load" file="$(find gbplanner)/config/rmf_obelix/task_allocation.yaml" />
+</node>
 
     <!-- <node name="plotting_node" pkg="gbplanner" type="plotting.py" output="screen"/>  -->
   <node pkg="rviz" type="rviz" name="gbplanner_ui" output="screen" args="-d $(find gbplanner)/config/rviz/rmf_obelix.rviz"/>

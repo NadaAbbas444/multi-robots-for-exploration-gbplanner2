@@ -1,913 +1,327 @@
-#include <ros/ros.h>
+// Dynamic task allocation for multi-UAV semantic inspection
+// (ICUAS 2025, Sec. IV-C).
+//
+// Tasks are semantic objects reported on /<ns>/previous_semantic_points.
+// Two strategies, selected with ~strategy:
+//
+//  * "auction"  Sequential single-item auction (Schneider et al., TAROS'15).
+//               After the exploration budget ~exploration_time_budget, all
+//               unassigned tasks are auctioned. Every round each robot bids
+//               its marginal cost for every open task:
+//                 B_ij = travel_time(end of i's queue -> task j)
+//                        + inspection_time + workload_weight * queue_time_i
+//               Bids exceeding a robot's remaining battery time are dropped.
+//               The globally lowest bid wins; repeat until no task is left.
+//               Tasks detected later are auctioned the same way, so the task
+//               set T is updated dynamically.
+//
+//  * "role"     Fixed roles from ~roles (explorer / inspector). Each task is
+//               assigned greedily, immediately on detection, to the closest
+//               inspector (load-balanced when there are more tasks than
+//               inspectors). An explorer takes over a task only if no
+//               inspector is within ~comm_range of it.
+//
+// A robot with tasks has its exploration planner paused; the inspection
+// planner (gbplanner, /<ns>/semantic_location) reports completion on
+// /<ns>/done_inspection, after which the next task is sent. A robot whose
+// queue is empty resumes exploration.
+
 #include <geometry_msgs/Point.h>
-#include <geometry_msgs/Point32.h>
-#include <std_msgs/Int32.h>
-#include <std_msgs/Bool.h>
+#include <nav_msgs/Odometry.h>
 #include <planner_semantic_msgs/SemanticPoint.h>
-#include <planner_semantic_msgs/SemanticClass.h>
-#include <planner_msgs/DistanceAndRole.h>
+#include <ros/ros.h>
+#include <std_msgs/Bool.h>
 #include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
-#include <vector>
-#include <cmath>
-#include <map>
 
-struct SemanticData {
-    geometry_msgs::Point point;
-    int description;
+#include <algorithm>
+#include <cmath>
+#include <deque>
+#include <limits>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace {
+
+struct Task {
+  int id;
+  geometry_msgs::Point point;
+  int type;
+  std::string reported_by;
+  std::string assigned_to;  // empty = unassigned
+  bool done = false;
 };
 
+double dist(const geometry_msgs::Point& a, const geometry_msgs::Point& b) {
+  return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) +
+                   (a.z - b.z) * (a.z - b.z));
+}
+
+}  // namespace
+
 class DynamicTaskAllocator {
-public:
-    DynamicTaskAllocator() : nh_("~"), done_inspection_red_(false), done_inspection_blue_(false) {
-        namespace_red_ = "red";
-        namespace_blue_ = "blue";
+ public:
+  explicit DynamicTaskAllocator(ros::NodeHandle& nh, ros::NodeHandle& pnh)
+      : nh_(nh), pnh_(pnh) {
+    pnh_.param<std::string>("strategy", strategy_, "auction");
+    std::vector<std::string> robots;
+    pnh_.param("robots", robots, std::vector<std::string>{"red", "blue"});
+    pnh_.param("exploration_time_budget", exploration_budget_, 500.0);
+    pnh_.param("task_merge_radius", merge_radius_, 6.0);
+    pnh_.param("inspection_time_per_task", inspection_time_, 30.0);
+    pnh_.param("v_max", v_max_, 1.0);
+    pnh_.param("workload_weight", workload_weight_, 1.0);
+    pnh_.param("comm_range", comm_range_, 50.0);
+    pnh_.param("battery_time_budget", battery_budget_, 1e9);
+    pnh_.param<std::string>("world_frame", world_frame_, "world");
 
-        // Service clients
-        my_distance_service_red_ = nh_.serviceClient<planner_msgs::DistanceAndRole>("/red/dta_node/compute_distance_and_role");
-        my_distance_service_blue_ = nh_.serviceClient<planner_msgs::DistanceAndRole>("/blue/dta_node/compute_distance_and_role");
-        toggle_planning_client_red_ = nh_.serviceClient<std_srvs::SetBool>("/red/gbplanner/toggle_planning");
-        toggle_planning_client_blue_ = nh_.serviceClient<std_srvs::SetBool>("/blue/gbplanner/toggle_planning");
-        stop_planning_client_red_ = nh_.serviceClient<std_srvs::Trigger>("/red/planner_control_interface/std_srvs/stop");
-        stop_planning_client_blue_ = nh_.serviceClient<std_srvs::Trigger>("/blue/planner_control_interface/std_srvs/stop");
-        automatic_planning_client_red_ = nh_.serviceClient<std_srvs::Trigger>("/red/planner_control_interface/std_srvs/automatic_planning");
-        automatic_planning_client_blue_ = nh_.serviceClient<std_srvs::Trigger>("/blue/planner_control_interface/std_srvs/automatic_planning");
-
-        // Subscribers
-        done_inspection_sub_red_ = nh_.subscribe("/red/done_inspection", 1, &DynamicTaskAllocator::doneInspectionCallbackRed, this);
-        done_inspection_sub_blue_ = nh_.subscribe("/blue/done_inspection", 1, &DynamicTaskAllocator::doneInspectionCallbackBlue, this);
-        semantic_sub_red_ = nh_.subscribe("/red/previous_semantic_points", 1, &DynamicTaskAllocator::semanticCallback, this);
-        semantic_sub_blue_ = nh_.subscribe("/blue/previous_semantic_points", 1, &DynamicTaskAllocator::semanticCallback, this);
-
-        // Publishers
-        semantic_pub_red_ = nh_.advertise<planner_semantic_msgs::SemanticPoint>("/red/semantic_location", 10);
-        semantic_pub_blue_ = nh_.advertise<planner_semantic_msgs::SemanticPoint>("/blue/semantic_location", 10);
-        timer_ = nh_.createTimer(ros::Duration(500), &DynamicTaskAllocator::allocateTasks, this);
+    if (strategy_ != "auction" && strategy_ != "role") {
+      ROS_WARN("Unknown strategy '%s', using 'auction'.", strategy_.c_str());
+      strategy_ = "auction";
     }
 
-private:
-    ros::NodeHandle nh_;
-    std::vector<SemanticData> points_;
-    std::vector<SemanticData> red_tasks_;
-    std::vector<SemanticData> blue_tasks_;
-    bool done_inspection_red_;
-    bool done_inspection_blue_;
-
-    std::string namespace_red_;
-    std::string namespace_blue_;
-
-    ros::ServiceClient my_distance_service_red_;
-    ros::ServiceClient my_distance_service_blue_;
-    ros::ServiceClient toggle_planning_client_red_;
-    ros::ServiceClient toggle_planning_client_blue_;
-    ros::ServiceClient stop_planning_client_red_;
-    ros::ServiceClient stop_planning_client_blue_;
-    ros::ServiceClient automatic_planning_client_red_;
-    ros::ServiceClient automatic_planning_client_blue_;
-    ros::Subscriber done_inspection_sub_red_;
-    ros::Subscriber done_inspection_sub_blue_;
-    ros::Subscriber semantic_sub_red_;
-    ros::Subscriber semantic_sub_blue_;
-    ros::Publisher semantic_pub_red_;
-    ros::Publisher semantic_pub_blue_;
-    ros::Timer timer_;
-
-    void semanticCallback(const planner_semantic_msgs::SemanticPoint::ConstPtr& msg) {
-        geometry_msgs::Point point;
-        point.x = msg->point.x;
-        point.y = msg->point.y;
-        point.z = msg->point.z;
-        int description = msg->type.value;
-
-        points_.push_back({point, description});
-        ROS_INFO_STREAM("Collected point: (" << point.x << ", " << point.y << ", " << point.z << ") with description: " << description);
+    for (const auto& name : robots) {
+      auto r = std::make_shared<Robot>();
+      r->name = name;
+      std::string role;
+      pnh_.param<std::string>("roles/" + name, role,
+                              strategy_ == "role" ? "explorer" : "any");
+      r->role = role;
+      const std::string ns = "/" + name;
+      r->toggle = nh_.serviceClient<std_srvs::SetBool>(ns + "/gbplanner/toggle_planning");
+      r->stop = nh_.serviceClient<std_srvs::Trigger>(ns + "/planner_control_interface/std_srvs/stop");
+      r->automatic = nh_.serviceClient<std_srvs::Trigger>(ns + "/planner_control_interface/std_srvs/automatic_planning");
+      r->task_pub = nh_.advertise<planner_semantic_msgs::SemanticPoint>(ns + "/semantic_location", 10);
+      r->odom_sub = nh_.subscribe<nav_msgs::Odometry>(
+          ns + "/odometry", 1,
+          [r](const nav_msgs::Odometry::ConstPtr& m) {
+            r->pose = m->pose.pose.position;
+            r->has_pose = true;
+          });
+      r->done_sub = nh_.subscribe<std_msgs::Bool>(
+          ns + "/done_inspection", 1,
+          [this, r](const std_msgs::Bool::ConstPtr& m) {
+            if (m->data) onInspectionDone(*r);
+          });
+      r->sem_sub = nh_.subscribe<planner_semantic_msgs::SemanticPoint>(
+          ns + "/previous_semantic_points", 50,
+          [this, name](const planner_semantic_msgs::SemanticPoint::ConstPtr& m) {
+            onDetection(*m, name);
+          });
+      robots_.push_back(r);
+      ROS_INFO("[TA] robot %s role=%s", name.c_str(), role.c_str());
     }
 
-    void doneInspectionCallbackRed(const std_msgs::Bool::ConstPtr& msg) {
-        done_inspection_red_ = msg->data;
-        ROS_INFO_STREAM("Received done_inspection from red: " << done_inspection_red_);
-        ROS_INFO_STREAM("Current red_tasks_ size: " << red_tasks_.size());
-        if (done_inspection_red_ && red_tasks_.empty()) {
-            reactivatePlannerIfNoTasks(red_tasks_, toggle_planning_client_red_, stop_planning_client_red_, automatic_planning_client_red_);
+    start_time_ = ros::Time::now();
+    timer_ = nh_.createTimer(ros::Duration(1.0), &DynamicTaskAllocator::tick, this);
+    ROS_INFO("[TA] strategy=%s, exploration budget %.0f s, %zu robots",
+             strategy_.c_str(), exploration_budget_, robots_.size());
+  }
+
+ private:
+  struct Robot {
+    std::string name, role;
+    geometry_msgs::Point pose;
+    bool has_pose = false;
+    std::deque<int> queue;  // task ids; front() is being inspected
+    bool inspecting = false;
+    bool exploring = true;
+    ros::ServiceClient toggle, stop, automatic;
+    ros::Publisher task_pub;
+    ros::Subscriber odom_sub, done_sub, sem_sub;
+  };
+
+  // ---------------------------------------------------------------- events
+  void onDetection(const planner_semantic_msgs::SemanticPoint& m,
+                   const std::string& reporter) {
+    geometry_msgs::Point p;
+    p.x = m.point.x;
+    p.y = m.point.y;
+    p.z = m.point.z;
+    for (const auto& t : tasks_)
+      if (dist(t.point, p) < merge_radius_) return;  // already known
+    Task t;
+    t.id = static_cast<int>(tasks_.size());
+    t.point = p;
+    t.type = m.type.value;
+    t.reported_by = reporter;
+    tasks_.push_back(t);
+    ROS_INFO("[TA] new task %d (type %d) at (%.1f, %.1f, %.1f) from %s", t.id,
+             t.type, p.x, p.y, p.z, reporter.c_str());
+    if (strategy_ == "role") assignRoleBased(tasks_.back());
+  }
+
+  void onInspectionDone(Robot& r) {
+    if (!r.inspecting || r.queue.empty()) return;
+    const int id = r.queue.front();
+    tasks_[id].done = true;
+    r.queue.pop_front();
+    r.inspecting = false;
+    ROS_INFO("[TA] %s finished task %d (%d/%zu done)", r.name.c_str(), id,
+             numDone(), tasks_.size());
+    dispatch(r);
+  }
+
+  void tick(const ros::TimerEvent&) {
+    const double elapsed = (ros::Time::now() - start_time_).toSec();
+    if (strategy_ == "auction") {
+      if (elapsed >= exploration_budget_) {
+        if (!auction_opened_) {
+          auction_opened_ = true;
+          ROS_INFO("[TA] exploration budget reached (%.0f s): auction open.",
+                   elapsed);
         }
+        runAuction();
+      }
     }
+    for (auto& r : robots_) dispatch(*r);
+  }
 
-    void doneInspectionCallbackBlue(const std_msgs::Bool::ConstPtr& msg) {
-        done_inspection_blue_ = msg->data;
-        ROS_INFO_STREAM("Received done_inspection from blue: " << done_inspection_blue_);
-        if (done_inspection_blue_ && blue_tasks_.empty()) {
-            reactivatePlannerIfNoTasks(blue_tasks_, toggle_planning_client_blue_, stop_planning_client_blue_, automatic_planning_client_blue_);
-        }
+  // ---------------------------------------------------------- strategies
+  // Time for robot r to finish its current queue, and where it ends up.
+  double queueTime(const Robot& r, geometry_msgs::Point& end) const {
+    end = r.pose;
+    double t = 0.0;
+    for (int id : r.queue) {
+      t += dist(end, tasks_[id].point) / v_max_ + inspection_time_;
+      end = tasks_[id].point;
     }
+    return t;
+  }
 
-    double distance(const geometry_msgs::Point& point1, const geometry_msgs::Point& point2) {
-        return std::sqrt(std::pow(point1.x - point2.x, 2) + std::pow(point1.y - point2.y, 2));
+  double remainingBattery() const {
+    return battery_budget_ - (ros::Time::now() - start_time_).toSec();
+  }
+
+  void runAuction() {
+    std::vector<int> open;
+    for (const auto& t : tasks_)
+      if (!t.done && t.assigned_to.empty()) open.push_back(t.id);
+    if (open.empty()) return;
+
+    while (!open.empty()) {
+      double best_bid = std::numeric_limits<double>::infinity();
+      Robot* winner = nullptr;
+      int best_task = -1;
+      for (auto& r : robots_) {
+        if (!r->has_pose) continue;
+        geometry_msgs::Point end;
+        const double qt = queueTime(*r, end);
+        for (int id : open) {
+          const double marginal =
+              dist(end, tasks_[id].point) / v_max_ + inspection_time_;
+          if (qt + marginal > remainingBattery()) continue;  // can't afford
+          const double bid = marginal + workload_weight_ * qt;
+          if (bid < best_bid) best_bid = bid, winner = r.get(), best_task = id;
+        }
+      }
+      if (!winner) {
+        ROS_WARN_THROTTLE(10.0, "[TA] %zu task(s) not affordable by any robot.",
+                          open.size());
+        return;
+      }
+      tasks_[best_task].assigned_to = winner->name;
+      winner->queue.push_back(best_task);
+      open.erase(std::find(open.begin(), open.end(), best_task));
+      ROS_INFO("[TA] auction: task %d -> %s (bid %.1f s)", best_task,
+               winner->name.c_str(), best_bid);
     }
+  }
 
-    std::map<int, std::map<std::string, double>> calculateCosts() {
-        std::map<int, std::map<std::string, double>> costs;
-        for (size_t idx = 0; idx < points_.size(); ++idx) {
-            const auto& point = points_[idx].point;
-            planner_msgs::DistanceAndRole srv;
-            srv.request.point = point;
-
-            if (my_distance_service_red_.call(srv)) {
-                costs[idx]["red"] = srv.response.distance;
-            } else {
-                ROS_ERROR("Failed to call red distance service");
-            }
-
-            if (my_distance_service_blue_.call(srv)) {
-                costs[idx]["blue"] = srv.response.distance;
-            } else {
-                ROS_ERROR("Failed to call blue distance service");
-            }
-        }
-        return costs;
+  void assignRoleBased(Task& t) {
+    auto pick = [&](const std::string& role, bool require_range) -> Robot* {
+      Robot* best = nullptr;
+      double best_cost = std::numeric_limits<double>::infinity();
+      for (auto& r : robots_) {
+        if (r->role != role || !r->has_pose) continue;
+        const double d = dist(r->pose, t.point);
+        if (require_range && d > comm_range_) continue;
+        // Greedy: closest robot, ties broken by fewer queued tasks.
+        const double cost = d + 1e3 * r->queue.size();
+        if (cost < best_cost) best_cost = cost, best = r.get();
+      }
+      return best;
+    };
+    Robot* r = pick("inspector", true);
+    if (!r) r = pick("explorer", false);   // inspector out of range: take over
+    if (!r) r = pick("inspector", false);  // no explorer either
+    if (!r) {
+      ROS_WARN("[TA] no robot available for task %d yet.", t.id);
+      return;
     }
+    t.assigned_to = r->name;
+    r->queue.push_back(t.id);
+    ROS_INFO("[TA] role-based: task %d -> %s (%s)", t.id, r->name.c_str(),
+             r->role.c_str());
+  }
 
-    void filterTasksByProximity(std::vector<SemanticData>& tasks, double proximity_threshold) {
-        std::vector<SemanticData> filtered;
-        for (auto& task : tasks) {
-            bool is_too_close = std::any_of(filtered.begin(), filtered.end(), [&task, proximity_threshold, this](const SemanticData& other) {
-                return distance(task.point, other.point) < proximity_threshold;
-            });
-            if (!is_too_close) {
-                filtered.push_back(task);
-            }
-        }
-        tasks.swap(filtered);
+  // ------------------------------------------------------------ dispatch
+  void dispatch(Robot& r) {
+    if (r.inspecting) return;
+    if (!r.queue.empty()) {
+      if (r.exploring) setExploration(r, false);
+      const Task& t = tasks_[r.queue.front()];
+      planner_semantic_msgs::SemanticPoint msg;
+      msg.header.stamp = ros::Time::now();
+      msg.header.frame_id = world_frame_;
+      msg.type.value = t.type;
+      msg.point.x = t.point.x;
+      msg.point.y = t.point.y;
+      msg.point.z = t.point.z;
+      r.task_pub.publish(msg);
+      r.inspecting = true;
+      ROS_INFO("[TA] %s: inspecting task %d at (%.1f, %.1f, %.1f)",
+               r.name.c_str(), t.id, t.point.x, t.point.y, t.point.z);
+      return;
     }
+    // Nothing to inspect. Explorers always explore; in auction mode every
+    // robot explores until the budget is spent and again once idle.
+    if (!r.exploring && (r.role != "inspector" || strategy_ == "auction"))
+      setExploration(r, true);
+  }
 
-    void allocateTasks(const ros::TimerEvent&) {
-        if (points_.empty()) {
-            ROS_INFO("No points to allocate.");
-            return;
-        }
-
-        filterTasksByProximity(points_, 6.0);  // Example threshold of 8.0 units
-
-        // Stop the planners
-        std_srvs::SetBool toggle_srv;
-        toggle_srv.request.data = false;
-        if (toggle_planning_client_red_.call(toggle_srv) && toggle_planning_client_blue_.call(toggle_srv)) {
-            ROS_INFO("Planners stopped.");
-        } else {
-            ROS_ERROR("Failed to stop planners.");
-            return;
-        }
-
-        auto costs = calculateCosts();
-        red_tasks_.clear();
-        blue_tasks_.clear();
-
-        for (const auto& [idx, cost] : costs) {
-            if (cost.at("red") < cost.at("blue")) {
-                red_tasks_.push_back(points_[idx]);
-            } else {
-                blue_tasks_.push_back(points_[idx]);
-            }
-        }
-
-        bool reactivated_red = false;
-        bool reactivated_blue = false;
-
-        // Check if there are no tasks assigned to the red robot
-        if (red_tasks_.empty()) {
-            ROS_INFO("No tasks assigned to red robot. Reactivating red planner.");
-            reactivatePlannerIfNoTasks(red_tasks_, toggle_planning_client_red_, stop_planning_client_red_, automatic_planning_client_red_);
-            reactivated_red = true;
-        }
-        else{
-            for (const auto& task : red_tasks_) {
-                ROS_INFO_STREAM("Task in red: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-            }
-        }
-
-        // Check if there are no tasks assigned to the blue robot
-        if (blue_tasks_.empty()) {
-            ROS_INFO("No tasks assigned to blue robot. Reactivating blue planner.");
-            reactivatePlannerIfNoTasks(blue_tasks_, toggle_planning_client_blue_, stop_planning_client_blue_, automatic_planning_client_blue_);
-            reactivated_blue = true;
-        }
-
-        else{
-            for (const auto& task : blue_tasks_) {
-                ROS_INFO_STREAM("Task in blue: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-            }
-        }
-
-        // If both robots have no tasks and both planners were reactivated, clear points and return
-        if (reactivated_red && reactivated_blue) {
-            points_.clear();
-            return;
-        }
-
-        // // Log and publish tasks only if tasks were assigned
-        // if (!red_tasks_.empty()) {
-        //     logAndPublishTasks(red_tasks_, "red");
-        // }
-        // if (!blue_tasks_.empty()) {
-        //     logAndPublishTasks(blue_tasks_, "blue");
-        // }
-        
-        logAndPublishTasks(red_tasks_, blue_tasks_);
-
-        // Print assigned tasks to ROS logs
-        if (!red_tasks_.empty()) {
-            ROS_INFO_STREAM("Assigned tasks to red robot:");
-            for (const auto& task : red_tasks_) {
-                ROS_INFO_STREAM("Task at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-            }
-        }
-
-        if (!blue_tasks_.empty()) {
-            ROS_INFO_STREAM("Assigned tasks to blue robot:");
-            for (const auto& task : blue_tasks_) {
-                ROS_INFO_STREAM("Task at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-            }
-        }
-
-        points_.clear();  // Clear the list of points after allocation
-
-        // Debugging before clearing
-        ROS_INFO_STREAM("Before clearing, red_tasks_ size: " << red_tasks_.size());
-        ROS_INFO_STREAM("Before clearing, blue_tasks_ size: " << blue_tasks_.size());
-
-        // Ensure tasks are cleared after processing
-        red_tasks_.clear();
-        blue_tasks_.clear();
-
-        // Debugging after clearing
-        ROS_INFO_STREAM("After clearing, red_tasks_ size: " << red_tasks_.size());
-        ROS_INFO_STREAM("After clearing, blue_tasks_ size: " << blue_tasks_.size());
-
-        // Reactivate planners if no tasks are assigned (if they weren't reactivated before)
-        if (!reactivated_red) {
-            reactivatePlannerIfNoTasks(red_tasks_, toggle_planning_client_red_, stop_planning_client_red_, automatic_planning_client_red_);
-        }
-        if (!reactivated_blue) {
-            reactivatePlannerIfNoTasks(blue_tasks_, toggle_planning_client_blue_, stop_planning_client_blue_, automatic_planning_client_blue_);
-        }
+  void setExploration(Robot& r, bool on) {
+    std_srvs::SetBool tog;
+    tog.request.data = on;
+    if (!r.toggle.call(tog)) {
+      ROS_WARN_THROTTLE(5.0, "[TA] %s: toggle_planning unavailable.",
+                        r.name.c_str());
+      return;
     }
+    std_srvs::Trigger trig;
+    r.stop.call(trig);
+    if (on) r.automatic.call(trig);
+    r.exploring = on;
+    ROS_INFO("[TA] %s: exploration %s", r.name.c_str(), on ? "ON" : "OFF");
+  }
 
+  int numDone() const {
+    return static_cast<int>(std::count_if(tasks_.begin(), tasks_.end(),
+                                          [](const Task& t) { return t.done; }));
+  }
 
-    // void logAndPublishTasks(const std::vector<SemanticData>& tasks, const std::string& robot_namespace) {
-    //     if (tasks.empty()) {
-    //         ROS_INFO_STREAM("No tasks assigned to " << robot_namespace << " robot. Enabling planner to continue exploring.");
-    //     } else {
-    //         ROS_INFO_STREAM("Assigned tasks to " << robot_namespace << " robot:");
-    //         for (const auto& task : tasks) {
-    //             ROS_INFO_STREAM("Task at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-                
-    //             // Reset the done_inspection flag for the respective robot
-    //             if (robot_namespace == "red") {
-    //                 done_inspection_red_ = false;
-    //             } else {
-    //                 done_inspection_blue_ = false;
-    //             }
-
-    //             publishTask(task, robot_namespace);
-
-    //             // Wait for the done_inspection flag to be set to true
-    //             ros::Rate rate(10); // Check at 10 Hz
-    //             while (ros::ok() && ((robot_namespace == "red" && !done_inspection_red_) ||
-    //                                 (robot_namespace == "blue" && !done_inspection_blue_))) {
-    //                 ros::spinOnce();
-    //                 rate.sleep();
-    //             }
-    //         }
-    //     }
-    // }
-
-
-    void logAndPublishTasks(const std::vector<SemanticData>& red_tasks, const std::vector<SemanticData>& blue_tasks) {
-        size_t red_index = 0;
-        size_t blue_index = 0;
-        
-        while (red_index < red_tasks.size() || blue_index < blue_tasks.size()) {
-            // Assign red task if there are remaining tasks
-            if (red_index < red_tasks.size()) {
-                const auto& task = red_tasks[red_index];
-                ROS_INFO_STREAM("Assigning task to red robot at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-                done_inspection_red_ = false;
-                publishTask(task, "red");
-            }
-
-            // Assign blue task if there are remaining tasks
-            if (blue_index < blue_tasks.size()) {
-                const auto& task = blue_tasks[blue_index];
-                ROS_INFO_STREAM("Assigning task to blue robot at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-                done_inspection_blue_ = false;
-                publishTask(task, "blue");
-            }
-
-            // Wait for the respective robot to finish its task
-            ros::Rate rate(10); // Check at 10 Hz
-            while (ros::ok() && ((red_index < red_tasks.size() && !done_inspection_red_) || 
-                                (blue_index < blue_tasks.size() && !done_inspection_blue_))) {
-                ros::spinOnce();
-                rate.sleep();
-            }
-
-            // Move to the next task in the respective list
-            if (red_index < red_tasks.size() && done_inspection_red_) {
-                ++red_index;
-            }
-            if (blue_index < blue_tasks.size() && done_inspection_blue_) {
-                ++blue_index;
-            }
-        }
-    }
-
-
-
-    void reactivatePlannerIfNoTasks(const std::vector<SemanticData>& tasks, ros::ServiceClient& planning_client, ros::ServiceClient& stop_client, ros::ServiceClient& automatic_client) {
-        if (tasks.empty()) {
-            std_srvs::SetBool toggle_srv;
-            toggle_srv.request.data = true; // Enable planner
-            if (planning_client.call(toggle_srv)) {
-                ROS_INFO("Planner restarted for exploration.");
-
-                // Trigger the stop and automatic planning services
-                std_srvs::Trigger trigger_srv;
-                
-                if (stop_client.call(trigger_srv) && trigger_srv.response.success) {
-                    ROS_INFO("Stop service called successfully.");
-                } else {
-                    ROS_WARN("Failed to call stop service.");
-                }
-
-                if (automatic_client.call(trigger_srv) && trigger_srv.response.success) {
-                    ROS_INFO("Automatic planning service called successfully.");
-                } else {
-                    ROS_WARN("Failed to call automatic planning service.");
-                }
-            } else {
-                ROS_ERROR("Failed to restart planner.");
-            }
-        }
-    }
-
-    void publishTask(const SemanticData& task, const std::string& robot_namespace) {
-        planner_semantic_msgs::SemanticPoint msg;
-        msg.header.stamp = ros::Time::now();
-        msg.header.frame_id = "world";
-        msg.type.value = task.description;
-        msg.point.x = task.point.x;
-        msg.point.y = task.point.y;
-        msg.point.z = task.point.z;
-
-        if (robot_namespace == "red") {
-            semantic_pub_red_.publish(msg);
-            ROS_INFO_STREAM("Published task for red robot at point: (" << msg.point.x << ", " << msg.point.y << ", " << msg.point.z << ")");
-        } else {
-            semantic_pub_blue_.publish(msg);
-            ROS_INFO_STREAM("Published task for blue robot at point: (" << msg.point.x << ", " << msg.point.y << ", " << msg.point.z << ")");
-        }
-    }
+  ros::NodeHandle nh_, pnh_;
+  std::string strategy_, world_frame_;
+  double exploration_budget_, merge_radius_, inspection_time_, v_max_,
+      workload_weight_, comm_range_, battery_budget_;
+  std::vector<std::shared_ptr<Robot>> robots_;
+  std::vector<Task> tasks_;
+  bool auction_opened_ = false;
+  ros::Time start_time_;
+  ros::Timer timer_;
 };
 
 int main(int argc, char** argv) {
-    ros::init(argc, argv, "dynamic_auction");
-    DynamicTaskAllocator allocator;
-    ros::spin();
-    return 0;
+  ros::init(argc, argv, "dynamic_auction");
+  ros::NodeHandle nh, pnh("~");
+  // Wait for /clock under use_sim_time so start_time_ is meaningful.
+  while (ros::ok() && ros::Time::now().isZero()) {
+    ros::WallDuration(0.1).sleep();
+    ros::spinOnce();
+  }
+  DynamicTaskAllocator allocator(nh, pnh);
+  ros::spin();
+  return 0;
 }
-
-// ________________ for one robot for collecting results _______________________
-
-// #include <ros/ros.h>
-// #include <geometry_msgs/Point.h>
-// #include <std_msgs/Bool.h>
-// #include <planner_semantic_msgs/SemanticPoint.h>
-// #include <planner_msgs/DistanceAndRole.h>
-// #include <std_srvs/SetBool.h>
-// #include <std_srvs/Trigger.h>
-// #include <vector>
-// #include <cmath>
-// #include <map>
-
-// struct SemanticData {
-//     geometry_msgs::Point point;
-//     int description;
-// };
-
-// class DynamicTaskAllocator {
-// public:
-//     DynamicTaskAllocator() : nh_("~"), done_inspection_red_(false) {
-//         namespace_red_ = "red";
-
-//         // Service clients
-//         my_distance_service_red_ = nh_.serviceClient<planner_msgs::DistanceAndRole>("/red/dta_node/compute_distance_and_role");
-//         toggle_planning_client_red_ = nh_.serviceClient<std_srvs::SetBool>("/red/gbplanner/toggle_planning");
-//         stop_planning_client_red_ = nh_.serviceClient<std_srvs::Trigger>("/red/planner_control_interface/std_srvs/stop");
-//         automatic_planning_client_red_ = nh_.serviceClient<std_srvs::Trigger>("/red/planner_control_interface/std_srvs/automatic_planning");
-
-//         // Subscribers
-//         done_inspection_sub_red_ = nh_.subscribe("/red/done_inspection", 1, &DynamicTaskAllocator::doneInspectionCallbackRed, this);
-//         semantic_sub_red_ = nh_.subscribe("/red/previous_semantic_points", 1, &DynamicTaskAllocator::semanticCallback, this);
-
-//         // Publisher
-//         semantic_pub_red_ = nh_.advertise<planner_semantic_msgs::SemanticPoint>("/red/semantic_location", 10);
-
-//         // Timer for task allocation
-//         timer_ = nh_.createTimer(ros::Duration(10), &DynamicTaskAllocator::allocateTasks, this);
-//     }
-
-// private:
-//     ros::NodeHandle nh_;
-//     std::vector<SemanticData> points_;
-//     std::vector<SemanticData> red_tasks_;
-//     bool done_inspection_red_;
-//     std::string namespace_red_;
-
-//     ros::ServiceClient my_distance_service_red_;
-//     ros::ServiceClient toggle_planning_client_red_;
-//     ros::ServiceClient stop_planning_client_red_;
-//     ros::ServiceClient automatic_planning_client_red_;
-
-//     ros::Subscriber done_inspection_sub_red_;
-//     ros::Subscriber semantic_sub_red_;
-
-//     ros::Publisher semantic_pub_red_;
-
-//     ros::Timer timer_;
-
-//     void semanticCallback(const planner_semantic_msgs::SemanticPoint::ConstPtr& msg) {
-//         geometry_msgs::Point point;
-//         point.x = msg->point.x;
-//         point.y = msg->point.y;
-//         point.z = msg->point.z;
-//         int description = msg->type.value;
-
-//         points_.push_back({point, description});
-//         ROS_INFO_STREAM("Collected point: (" << point.x << ", " << point.y << ", " << point.z << ") with description: " << description);
-//     }
-
-//     void doneInspectionCallbackRed(const std_msgs::Bool::ConstPtr& msg) {
-//         done_inspection_red_ = msg->data;
-//         ROS_INFO_STREAM("Received done_inspection from red: " << done_inspection_red_);
-//         ROS_INFO_STREAM("Current red_tasks_ size: " << red_tasks_.size());
-//         if (done_inspection_red_ && red_tasks_.empty()) {
-//             reactivatePlannerIfNoTasks(red_tasks_, toggle_planning_client_red_, stop_planning_client_red_, automatic_planning_client_red_);
-//         }
-//     }
-
-//     double distance(const geometry_msgs::Point& point1, const geometry_msgs::Point& point2) {
-//         return std::sqrt(std::pow(point1.x - point2.x, 2) + std::pow(point1.y - point2.y, 2));
-//     }
-
-//     std::map<int, double> calculateCosts() {
-//         std::map<int, double> costs;
-//         for (size_t idx = 0; idx < points_.size(); ++idx) {
-//             const auto& point = points_[idx].point;
-//             planner_msgs::DistanceAndRole srv;
-//             srv.request.point = point;
-
-//             if (my_distance_service_red_.call(srv)) {
-//                 costs[idx] = srv.response.distance;
-//             } else {
-//                 ROS_ERROR("Failed to call red distance service");
-//             }
-//         }
-//         return costs;
-//     }
-
-//     void filterTasksByProximity(std::vector<SemanticData>& tasks, double proximity_threshold) {
-//         std::vector<SemanticData> filtered;
-//         for (auto& task : tasks) {
-//             bool is_too_close = std::any_of(filtered.begin(), filtered.end(), [&task, proximity_threshold, this](const SemanticData& other) {
-//                 return distance(task.point, other.point) < proximity_threshold;
-//             });
-//             if (!is_too_close) {
-//                 filtered.push_back(task);
-//             }
-//         }
-//         tasks.swap(filtered);
-//     }
-
-//     void allocateTasks(const ros::TimerEvent&) {
-//         if (points_.empty()) {
-//             ROS_INFO("No points to allocate.");
-//             return;
-//         }
-
-//         filterTasksByProximity(points_, 8.0);  // Example threshold of 8.0 units
-
-//         // Stop the planner
-//         std_srvs::SetBool toggle_srv;
-//         toggle_srv.request.data = false;
-//         if (toggle_planning_client_red_.call(toggle_srv)) {
-//             ROS_INFO("Planner stopped.");
-//         } else {
-//             ROS_ERROR("Failed to stop planner.");
-//             return;
-//         }
-
-//         auto costs = calculateCosts();
-//         red_tasks_.clear();
-
-//         for (const auto& [idx, cost] : costs) {
-//             red_tasks_.push_back(points_[idx]);
-//         }
-
-//         // Log and publish tasks
-//         logAndPublishTasks(red_tasks_, "red");
-
-//         // Print assigned tasks to ROS logs
-//         ROS_INFO_STREAM("Assigned tasks to red robot:");
-//         for (const auto& task : red_tasks_) {
-//             ROS_INFO_STREAM("Task at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-//         }
-
-//         points_.clear();  // Clear the list of points after allocation
-
-//         // Debugging before clearing
-//         ROS_INFO_STREAM("Before clearing, red_tasks_ size: " << red_tasks_.size());
-
-//         // Ensure tasks are cleared after processing
-//         red_tasks_.clear();
-
-//         // Debugging after clearing
-//         ROS_INFO_STREAM("After clearing, red_tasks_ size: " << red_tasks_.size());
-
-//         // Check and reactivate planner if no tasks are assigned
-//         reactivatePlannerIfNoTasks(red_tasks_, toggle_planning_client_red_, stop_planning_client_red_, automatic_planning_client_red_);
-//     }
-
-//     void logAndPublishTasks(const std::vector<SemanticData>& tasks, const std::string& robot_namespace) {
-//         if (tasks.empty()) {
-//             ROS_INFO_STREAM("No tasks assigned to " << robot_namespace << " robot. Enabling planner to continue exploring.");
-//         } else {
-//             ROS_INFO_STREAM("Assigned tasks to " << robot_namespace << " robot:");
-//             for (const auto& task : tasks) {
-//                 ROS_INFO_STREAM("Task at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-//                 publishTask(task, robot_namespace);
-//             }
-//         }
-//     }
-
-//     void reactivatePlannerIfNoTasks(const std::vector<SemanticData>& tasks, ros::ServiceClient& planning_client, ros::ServiceClient& stop_client, ros::ServiceClient& automatic_client) {
-//         if (tasks.empty()) {
-//             std_srvs::SetBool toggle_srv;
-//             toggle_srv.request.data = true; // Enable planner
-//             if (planning_client.call(toggle_srv)) {
-//                 ROS_INFO("Planner restarted for exploration.");
-
-//                 // Trigger the stop and automatic planning services
-//                 std_srvs::Trigger trigger_srv;
-                
-//                 if (stop_client.call(trigger_srv) && trigger_srv.response.success) {
-//                     ROS_INFO("Stop service called successfully.");
-//                 } else {
-//                     ROS_WARN("Failed to call stop service.");
-//                 }
-
-//                 if (automatic_client.call(trigger_srv) && trigger_srv.response.success) {
-//                     ROS_INFO("Automatic planning service called successfully.");
-//                 } else {
-//                     ROS_WARN("Failed to call automatic planning service.");
-//                 }
-//             } else {
-//                 ROS_ERROR("Failed to restart planner.");
-//             }
-//         }
-//     }
-
-//     void publishTask(const SemanticData& task, const std::string& robot_namespace) {
-//         planner_semantic_msgs::SemanticPoint msg;
-//         msg.header.stamp = ros::Time::now();
-//         msg.header.frame_id = "world";
-//         msg.type.value = task.description;
-//         msg.point.x = task.point.x;
-//         msg.point.y = task.point.y;
-//         msg.point.z = task.point.z;
-
-//         semantic_pub_red_.publish(msg);
-//         ROS_INFO_STREAM("Published task for red robot at point: (" << msg.point.x << ", " << msg.point.y << ", " << msg.point.z << ")");
-//     }
-// };
-
-// int main(int argc, char** argv) {
-//     ros::init(argc, argv, "dynamic_auction");
-//     DynamicTaskAllocator allocator;
-//     ros::spin();
-//     return 0;
-// }
-
-
-
-
-
-
-
-
-
-
-
-
-//for the plot comment done_inspection and timer at rrg _____________________________________________________________________________________
-// #include <ros/ros.h>
-// #include <geometry_msgs/Point.h>
-// #include <geometry_msgs/Point32.h>
-// #include <std_msgs/Int32.h>
-// #include <std_msgs/Bool.h>
-// #include <planner_semantic_msgs/SemanticPoint.h>
-// #include <planner_semantic_msgs/SemanticClass.h>
-// #include <planner_msgs/DistanceAndRole.h>
-// #include <std_srvs/SetBool.h>
-// #include <std_srvs/Trigger.h>
-// #include <nav_msgs/Odometry.h>
-// #include <trajectory_msgs/MultiDOFJointTrajectory.h>
-// #include <vector>
-// #include <cmath>
-// #include <map>
-
-// struct SemanticData {
-//     geometry_msgs::Point point;
-//     int description;
-// };
-
-// class DynamicTaskAllocator {
-// public:
-//     DynamicTaskAllocator() : nh_("~"), reached_final_pose_red_(false), reached_final_pose_blue_(false) {
-//         namespace_red_ = "red";
-//         namespace_blue_ = "blue";
-
-//         // Service clients
-//         my_distance_service_red_ = nh_.serviceClient<planner_msgs::DistanceAndRole>("/red/dta_node/compute_distance_and_role");
-//         my_distance_service_blue_ = nh_.serviceClient<planner_msgs::DistanceAndRole>("/blue/dta_node/compute_distance_and_role");
-//         toggle_planning_client_red_ = nh_.serviceClient<std_srvs::SetBool>("/red/gbplanner/toggle_planning");
-//         toggle_planning_client_blue_ = nh_.serviceClient<std_srvs::SetBool>("/blue/gbplanner/toggle_planning");
-//         stop_planning_client_red_ = nh_.serviceClient<std_srvs::Trigger>("/red/planner_control_interface/std_srvs/stop");
-//         stop_planning_client_blue_ = nh_.serviceClient<std_srvs::Trigger>("/blue/planner_control_interface/std_srvs/stop");
-//         automatic_planning_client_red_ = nh_.serviceClient<std_srvs::Trigger>("/red/planner_control_interface/std_srvs/automatic_planning");
-//         automatic_planning_client_blue_ = nh_.serviceClient<std_srvs::Trigger>("/blue/planner_control_interface/std_srvs/automatic_planning");
-
-//         // Subscribers
-//         semantic_sub_red_ = nh_.subscribe("/red/previous_semantic_points", 1, &DynamicTaskAllocator::semanticCallback, this);
-//         semantic_sub_blue_ = nh_.subscribe("/blue/previous_semantic_points", 1, &DynamicTaskAllocator::semanticCallback, this);
-//         odometry_sub_red_ = nh_.subscribe("/red/odometry", 1, &DynamicTaskAllocator::odometryCallbackRed, this);
-//         odometry_sub_blue_ = nh_.subscribe("/blue/odometry", 1, &DynamicTaskAllocator::odometryCallbackBlue, this);
-//         adjusted_points_sub_red_ = nh_.subscribe("/red/inspection_trajectory", 10, &DynamicTaskAllocator::adjustedPointsCallbackRed, this);
-//         adjusted_points_sub_blue_ = nh_.subscribe("/blue/inspection_trajectory", 10, &DynamicTaskAllocator::adjustedPointsCallbackBlue, this);
-
-//         // Publishers
-//         semantic_pub_red_ = nh_.advertise<planner_semantic_msgs::SemanticPoint>("/red/semantic_location", 10);
-//         semantic_pub_blue_ = nh_.advertise<planner_semantic_msgs::SemanticPoint>("/blue/semantic_location", 10);
-
-//         // Timer for task allocation
-//         timer_ = nh_.createTimer(ros::Duration(10), &DynamicTaskAllocator::allocateTasks, this);
-//     }
-
-// private:
-//     ros::NodeHandle nh_;
-//     std::vector<SemanticData> points_;
-//     std::vector<SemanticData> red_tasks_;
-//     std::vector<SemanticData> blue_tasks_;
-//     bool reached_final_pose_red_;
-//     bool reached_final_pose_blue_;
-//     geometry_msgs::Point last_pose_red_;
-//     geometry_msgs::Point last_pose_blue_;
-//     geometry_msgs::Point target_pose_red_;
-//     geometry_msgs::Point target_pose_blue_;
-
-//     std::string namespace_red_;
-//     std::string namespace_blue_;
-
-//     ros::ServiceClient my_distance_service_red_;
-//     ros::ServiceClient my_distance_service_blue_;
-//     ros::ServiceClient toggle_planning_client_red_;
-//     ros::ServiceClient toggle_planning_client_blue_;
-//     ros::ServiceClient stop_planning_client_red_;
-//     ros::ServiceClient stop_planning_client_blue_;
-//     ros::ServiceClient automatic_planning_client_red_;
-//     ros::ServiceClient automatic_planning_client_blue_;
-
-//     ros::Subscriber semantic_sub_red_;
-//     ros::Subscriber semantic_sub_blue_;
-//     ros::Subscriber odometry_sub_red_;
-//     ros::Subscriber odometry_sub_blue_;
-//     ros::Subscriber adjusted_points_sub_red_;
-//     ros::Subscriber adjusted_points_sub_blue_;
-
-//     ros::Publisher semantic_pub_red_;
-//     ros::Publisher semantic_pub_blue_;
-
-//     ros::Timer timer_;
-
-//     void semanticCallback(const planner_semantic_msgs::SemanticPoint::ConstPtr& msg) {
-//         geometry_msgs::Point point;
-//         point.x = msg->point.x;
-//         point.y = msg->point.y;
-//         point.z = msg->point.z;
-//         int description = msg->type.value;
-
-//         points_.push_back({point, description});
-//         ROS_INFO_STREAM("Collected point: (" << point.x << ", " << point.y << ", " << point.z << ") with description: " << description);
-//     }
-
-//     void odometryCallbackRed(const nav_msgs::Odometry::ConstPtr& msg) {
-//         last_pose_red_ = msg->pose.pose.position;
-//         // ROS_INFO_STREAM("Red robot current pose: (" << last_pose_red_.x << ", " << last_pose_red_.y << ", " << last_pose_red_.z << ")");
-//         // ROS_INFO_STREAM("Calling checkProximityToFinalPose for red...");
-//         checkProximityToFinalPose(last_pose_red_, target_pose_red_, reached_final_pose_red_, toggle_planning_client_red_, stop_planning_client_red_, automatic_planning_client_red_);
-//     }
-
-//     void odometryCallbackBlue(const nav_msgs::Odometry::ConstPtr& msg) {
-//         last_pose_blue_ = msg->pose.pose.position;
-//         // ROS_INFO_STREAM("Blue robot current pose: (" << last_pose_blue_.x << ", " << last_pose_blue_.y << ", " << last_pose_blue_.z << ")");
-//         // ROS_INFO_STREAM("Calling checkProximityToFinalPose for blue...");
-//         checkProximityToFinalPose(last_pose_blue_, target_pose_blue_, reached_final_pose_blue_, toggle_planning_client_blue_, stop_planning_client_blue_, automatic_planning_client_blue_);
-//     }
-
-//     void adjustedPointsCallbackRed(const trajectory_msgs::MultiDOFJointTrajectory::ConstPtr& msg) {
-//         if (!msg->points.empty()) {
-//             ROS_INFO_STREAM("trajec: (" << msg << ")");
-//             target_pose_red_.x = msg->points.back().transforms[0].translation.x;
-//             target_pose_red_.y = msg->points.back().transforms[0].translation.y;
-//             target_pose_red_.z = msg->points.back().transforms[0].translation.z;
-//             // ROS_INFO_STREAM("Set target pose for red: (" << target_pose_red_.x << ", " << target_pose_red_.y << ", " << target_pose_red_.z << ")");
-//         }
-//     }
-
-//     void adjustedPointsCallbackBlue(const trajectory_msgs::MultiDOFJointTrajectory::ConstPtr& msg) {
-//         if (!msg->points.empty()) {
-//             target_pose_blue_.x = msg->points.back().transforms[0].translation.x;
-//             target_pose_blue_.y = msg->points.back().transforms[0].translation.y;
-//             target_pose_blue_.z = msg->points.back().transforms[0].translation.z;
-//             // ROS_INFO_STREAM("Set target pose for blue: (" << target_pose_blue_.x << ", " << target_pose_blue_.y << ", " << target_pose_blue_.z << ")");
-//         }
-//     }
-
-//     void checkProximityToFinalPose(const geometry_msgs::Point& current_pose, const geometry_msgs::Point& target_pose, bool& reached_final_pose, ros::ServiceClient& planning_client, ros::ServiceClient& stop_client, ros::ServiceClient& automatic_client) {
-//         double dist = distance(current_pose, target_pose);
-//         // ROS_INFO_STREAM("Checking distance to target pose: (" << target_pose.x << ", " << target_pose.y << ", " << target_pose.z << "), distance: " << dist);
-//         if (dist < 0.5) {  // Check if within 1m³ vicinity
-//             // ROS_INFO_STREAM("Robot reached the final pose vicinity: (" << target_pose.x << ", " << target_pose.y << ", " << target_pose.z << ")");
-//             reached_final_pose = true;
-//             reactivatePlannerIfNoTasks(planning_client, stop_client, automatic_client);
-//         }
-//     }
-
-//     double distance(const geometry_msgs::Point& point1, const geometry_msgs::Point& point2) {
-//         return std::sqrt(std::pow(point1.x - point2.x, 2) + std::pow(point1.y - point2.y, 2) + std::pow(point1.z - point2.z, 2));
-//     }
-
-//     std::map<int, std::map<std::string, double>> calculateCosts() {
-//         std::map<int, std::map<std::string, double>> costs;
-//         for (size_t idx = 0; idx < points_.size(); ++idx) {
-//             const auto& point = points_[idx].point;
-//             planner_msgs::DistanceAndRole srv;
-//             srv.request.point = point;
-
-//             if (my_distance_service_red_.call(srv)) {
-//                 costs[idx]["red"] = srv.response.distance;
-//             } else {
-//                 ROS_ERROR("Failed to call red distance service");
-//             }
-
-//             if (my_distance_service_blue_.call(srv)) {
-//                 costs[idx]["blue"] = srv.response.distance;
-//             } else {
-//                 ROS_ERROR("Failed to call blue distance service");
-//             }
-//         }
-//         return costs;
-//     }
-
-//     void filterTasksByProximity(std::vector<SemanticData>& tasks, double proximity_threshold) {
-//         std::vector<SemanticData> filtered;
-//         for (auto& task : tasks) {
-//             bool is_too_close = std::any_of(filtered.begin(), filtered.end(), [&task, proximity_threshold, this](const SemanticData& other) {
-//                 return distance(task.point, other.point) < proximity_threshold;
-//             });
-//             if (!is_too_close) {
-//                 filtered.push_back(task);
-//             }
-//         }
-//         tasks.swap(filtered);
-//     }
-
-//     void allocateTasks(const ros::TimerEvent&) {
-//         if (points_.empty()) {
-//             ROS_INFO("No points to allocate.");
-//             return;
-//         }
-
-//         filterTasksByProximity(points_, 8.0);  // Example threshold of 8.0 units
-
-//         // Stop the planners
-//         std_srvs::SetBool toggle_srv;
-//         toggle_srv.request.data = false;
-//         if (toggle_planning_client_red_.call(toggle_srv) && toggle_planning_client_blue_.call(toggle_srv)) {
-//             ROS_INFO("Planners stopped.");
-//         } else {
-//             ROS_ERROR("Failed to stop planners.");
-//             return;
-//         }
-
-//         auto costs = calculateCosts();
-//         red_tasks_.clear();
-//         blue_tasks_.clear();
-
-//         for (std::map<int, std::map<std::string, double>>::const_iterator it = costs.begin(); it != costs.end(); ++it) {
-//             int idx = it->first;
-//             const std::map<std::string, double>& cost = it->second;
-
-//             if (cost.at("red") < cost.at("blue")) {
-//                 red_tasks_.push_back(points_[idx]);
-//             } else {
-//                 blue_tasks_.push_back(points_[idx]);
-//             }
-//         }
-
-//         // Log and publish tasks
-//         logAndPublishTasks(red_tasks_, "red");
-//         logAndPublishTasks(blue_tasks_, "blue");
-
-//         // Print assigned tasks to ROS logs
-//         ROS_INFO_STREAM("Assigned tasks to red robot:");
-//         for (const auto& task : red_tasks_) {
-//             ROS_INFO_STREAM("Task at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-//         }
-
-//         ROS_INFO_STREAM("Assigned tasks to blue robot:");
-//         for (const auto& task : blue_tasks_) {
-//             ROS_INFO_STREAM("Task at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-//         }
-
-//         points_.clear();  // Clear the list of points after allocation
-
-//         // // Ensure tasks are cleared after processing
-//         // red_tasks_.clear();
-//         // blue_tasks_.clear();
-
-//         // // Debugging after clearing
-//         // ROS_INFO_STREAM("After clearing, red_tasks_ size: " << red_tasks_.size());
-//         // ROS_INFO_STREAM("After clearing, blue_tasks_ size: " << blue_tasks_.size());
-//     }
-
-//     void logAndPublishTasks(const std::vector<SemanticData>& tasks, const std::string& robot_namespace) {
-//         if (tasks.empty()) {
-//             ROS_INFO_STREAM("No tasks assigned to " << robot_namespace << " robot. Enabling planner to continue exploring.");
-//         } else {
-//             ROS_INFO_STREAM("Assigned tasks to " << robot_namespace << " robot:");
-//             for (const auto& task : tasks) {
-//                 ROS_INFO_STREAM("Task at point: (" << task.point.x << ", " << task.point.y << ", " << task.point.z << ")");
-//                 publishTask(task, robot_namespace);
-//             }
-//         }
-//     }
-
-//     void reactivatePlannerIfNoTasks(ros::ServiceClient& planning_client, ros::ServiceClient& stop_client, ros::ServiceClient& automatic_client) {
-//         std_srvs::SetBool toggle_srv;
-//         toggle_srv.request.data = true; // Enable planner
-//         if (planning_client.call(toggle_srv)) {
-//             ROS_INFO("Planner restarted for exploration.");
-
-//             // Trigger the stop and automatic planning services
-//             std_srvs::Trigger trigger_srv;
-            
-//             if (stop_client.call(trigger_srv) && trigger_srv.response.success) {
-//                 ROS_INFO("Stop service called successfully.");
-//             } else {
-//                 ROS_WARN("Failed to call stop service.");
-//             }
-
-//             if (automatic_client.call(trigger_srv) && trigger_srv.response.success) {
-//                 ROS_INFO("Automatic planning service called successfully.");
-//             } else {
-//                 ROS_WARN("Failed to call automatic planning service.");
-//             }
-//         } else {
-//             ROS_ERROR("Failed to restart planner.");
-//         }
-//     }
-
-//     void publishTask(const SemanticData& task, const std::string& robot_namespace) {
-//         planner_semantic_msgs::SemanticPoint msg;
-//         msg.header.stamp = ros::Time::now();
-//         msg.header.frame_id = "world";
-//         msg.type.value = task.description;
-//         msg.point.x = task.point.x;
-//         msg.point.y = task.point.y;
-//         msg.point.z = task.point.z;
-
-//         if (robot_namespace == "red") {
-//             semantic_pub_red_.publish(msg);
-//             ROS_INFO_STREAM("Published task for red robot at point: (" << msg.point.x << ", " << msg.point.y << ", " << msg.point.z << ")");
-//         } else {
-//             semantic_pub_blue_.publish(msg);
-//             ROS_INFO_STREAM("Published task for blue robot at point: (" << msg.point.x << ", " << msg.point.y << ", " << msg.point.z << ")");
-//         }
-//     }
-// };
-
-// int main(int argc, char** argv) {
-//     ros::init(argc, argv, "dynamic_auction");
-//     DynamicTaskAllocator allocator;
-//     ros::spin();
-//     return 0;
-// }
