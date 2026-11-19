@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Report a semantic object (as if detected by UAV <reporter>) to test task
+# allocation and inspection without Mask R-CNN.
+#   inject_object <x> <y> <z> [reporter=red] [type=5 (kCar)]
+source "$ICUAS_HOME/workspace/sim/icuas2025_larics/env.sh"
+x=$1; y=$2; z=$3; r=${4:-red}; t=${5:-5}
+rostopic pub --once /$r/previous_semantic_points planner_semantic_msgs/SemanticPoint \
+  "{header: {frame_id: world}, point: {x: $x, y: $y, z: $z}, type: {value: $t}}"
+echo "reported object type $t at ($x, $y, $z) via $r"

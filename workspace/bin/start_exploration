@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Trigger autonomous exploration on all running UAVs (same as RViz "Initialization"
+# followed by "Start Planner"). Usage: start_exploration [red blue yellow]
+source "$ICUAS_HOME/workspace/sim/icuas2025_larics/env.sh"
+UAVS="${*:-$(rostopic list | sed -nE 's#^/([a-z]+)/gbplanner_node/.*#\1#p' | sort -u)}"
+for r in $UAVS; do rosservice call /$r/pci_initialization_trigger "{}" >/dev/null && echo "$r: init"; done
+sleep 15
+for r in $UAVS; do rosservice call /$r/planner_control_interface/std_srvs/automatic_planning "{}" >/dev/null && echo "$r: exploring"; done

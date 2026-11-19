@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Headless test: start, take off, explore N minutes (default 8), log + bag.
+#   run_test 10     NUM_UAVS=3 run_test     SCENARIO=tunnel run_test 6
+exec "$ICUAS_HOME/workspace/sim/icuas2025_larics/run_exploration_test.sh" "$@"

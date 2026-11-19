@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Start a scenario. Options are environment variables, e.g.
+#   start_sim                                   # 2 UAVs, DARPA cave, auction
+#   SCENARIO=tunnel STRATEGY=role start_sim     # tunnel + Mask R-CNN, role-based
+#   NUM_UAVS=3 SCENARIO=tunnel GUI=true start_sim
+# Watch:  tmux attach -t icuas2025   (Ctrl-b d to detach)    Stop:  stop_sim
+exec "$ICUAS_HOME/workspace/sim/icuas2025_larics/start.sh" "$@"

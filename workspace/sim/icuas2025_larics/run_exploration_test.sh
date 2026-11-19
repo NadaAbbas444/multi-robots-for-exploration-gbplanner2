@@ -32,6 +32,10 @@ for i in $(seq 1 60); do
   up=1; for r in $UAVS; do awk -v a="$(z_of $r)" 'BEGIN{exit !(a>1.2)}' || up=0; done
   [ $up = 1 ] && break; sleep 5
 done
+if [ $up != 1 ]; then
+  for r in $UAVS; do echo "$r z=$(z_of $r)"; done | tee -a "$OUT/summary.txt"
+  echo "TAKEOFF FAILED (see: tmux attach -t icuas2025)" | tee -a "$OUT/summary.txt"; exit 1
+fi
 sleep 40   # planner window waits ~30 s before launching
 TOPICS=""; for r in $UAVS; do TOPICS="$TOPICS /$r/odometry /$r/command/trajectory /$r/tracker/input_trajectory /$r/inspection_trajectory /$r/mavros/state /$r/no_go_zones /$r/semantic_location /$r/done_inspection /$r/previous_semantic_points"; done
 rosbag record -O "$OUT/diag.bag" $TOPICS __name:=diag_bag >/dev/null 2>&1 &

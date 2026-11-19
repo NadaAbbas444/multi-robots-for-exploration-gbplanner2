@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Build the catkin workspace (/ws) on top of the LARICS stack. Re-run after code changes.
+source "$ICUAS_HOME/workspace/sim/icuas2025_larics/env.sh" 2>/dev/null || source /opt/ros/noetic/setup.bash
+source /root/uav_ws/install/setup.bash; source /root/sim_ws/devel/setup.bash; source /root/extra_ws/devel/setup.bash
+cd /ws
+if [ ! -d .catkin_tools/profiles/default ] || ! grep -q build_larics .catkin_tools/profiles/default/config.yaml 2>/dev/null; then
+  catkin init >/dev/null 2>&1 || true
+  # Packages LARICS already provides (or that only the RotorS/SMB setups need) are skipped.
+  catkin config --build-space build_larics --devel-space devel_larics --log-space logs_larics \
+    --extend /root/extra_ws/devel \
+    --skiplist catkin_simple glog_catkin mav_msgs rotors_simulator rotors_comm rotors_control \
+      rotors_description rotors_evaluation rotors_gazebo rotors_gazebo_plugins rotors_joy_interface \
+      rqt_rotors smb_simulator smb_gazebo smb_description smb_teleop_twist_joy smb_path_tracker \
+      smb_lowlevel_controller smb_opc \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release >/dev/null
+fi
+catkin build --no-status --summarize "$@"

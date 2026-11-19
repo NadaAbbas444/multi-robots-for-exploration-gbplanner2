@@ -59,3 +59,5 @@ planner_gazebo_sim/maps_for_khawaja.zip
 __pycache__/
 *.pyc
 .vscode/
+# helper commands (upstream ignores every bin/)
+!workspace/bin/

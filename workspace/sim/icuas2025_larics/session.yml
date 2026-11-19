@@ -53,7 +53,8 @@ windows:
       panes:
         - waitForRos; roslaunch gazebo_ros empty_world.launch world_name:=<%= world %> gui:=<%= gui %> use_sim_time:=true
 <% uavs.each do |n, x, y, id, port| %>
-        - export UAV_NAMESPACE=<%= n %>; waitForRos; waitForSimulation; roslaunch ardupilot_gazebo spawn_kopterworx.launch x:=<%= x %> y:=<%= y %> z:=0.3 enable_velodyne:=true fdm_port_in:=<%= port %> fdm_port_out:=<%= port + 1 %>
+        # spawn nodes share one global name (spawn_robot): stagger them or they kill each other
+        - export UAV_NAMESPACE=<%= n %>; waitForRos; waitForSimulation; sleep <%= (id - 1) * 8 %>; roslaunch ardupilot_gazebo spawn_kopterworx.launch x:=<%= x %> y:=<%= y %> z:=0.3 enable_velodyne:=true fdm_port_in:=<%= port %> fdm_port_out:=<%= port + 1 %>
 <% end %>
   - arm&takeoff:
       layout: tiled

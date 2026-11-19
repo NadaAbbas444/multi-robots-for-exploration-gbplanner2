@@ -18,6 +18,12 @@ d="$REPO"; while [ "$d" != "/" ] && [ "$(basename "$d")" != "src" ]; do d="$(dir
 SRC="$d"; WS="$(dirname "$SRC")"
 echo "workspace: $WS"
 
+# subt_cave_sim keeps its cave meshes in Git LFS.
+if ! git lfs version >/dev/null 2>&1; then
+  echo "error: git-lfs is required (cave models). Install it, e.g.:  sudo apt install git-lfs" >&2
+  exit 1
+fi
+
 python3 - "$HERE/deps.repos" > /tmp/icuas2025_deps.txt <<'EOF'
 import re, sys
 s = open(sys.argv[1]).read()
@@ -29,10 +35,13 @@ while read -r path url ver; do
   dst="$SRC/$path"
   if [ ! -d "$dst/.git" ]; then
     echo "clone  $path"
-    git clone -q "$url" "$dst"
+    GIT_LFS_SKIP_SMUDGE=1 git clone -q "$url" "$dst"
   fi
   git -C "$dst" fetch -q origin "$ver" 2>/dev/null || git -C "$dst" fetch -q origin
-  git -C "$dst" -c advice.detachedHead=false checkout -q "$ver"
+  GIT_LFS_SKIP_SMUDGE=1 git -C "$dst" -c advice.detachedHead=false checkout -q "$ver"
+  if grep -qs "filter=lfs" "$dst/.gitattributes"; then
+    echo "lfs    $path"; git -C "$dst" lfs pull
+  fi
   echo "pinned $path @ ${ver:0:8}"
 done < /tmp/icuas2025_deps.txt
 
@@ -52,7 +61,7 @@ W="$REPO/mask_rcnn_ros/bags/mask_rcnn_coco.h5"
 if [ ! -s "$W" ]; then
   echo "download Mask R-CNN COCO weights (246 MB)"
   mkdir -p "$(dirname "$W")"
-  curl -L --fail -o "$W" https://github.com/matterport/Mask_RCNN/releases/download/v2.0/mask_rcnn_coco.h5
+  curl -L --fail --progress-bar -o "$W" https://github.com/matterport/Mask_RCNN/releases/download/v2.0/mask_rcnn_coco.h5
 fi
 echo "$(md5sum "$W" | cut -c1-32)  (expected e98aaff6f99e307b5e2a8a3ff741a518)"
 
@@ -60,5 +69,5 @@ cat <<EOF
 
 Workspace ready. Next:
   $HERE/docker/run.sh            # builds the image on first use, opens a shell
-  then inside the container:  build_ws && /ws/sim/icuas2025_larics/start.sh
+  then inside the container:  build_ws && start_sim   (see README.md)
 EOF
