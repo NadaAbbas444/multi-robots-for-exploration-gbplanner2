@@ -6,18 +6,15 @@ Panels:
       Expanded:
         - /Global Options1
         - /Axes1/TF1/Frames1
-        - /Odometry1/Shape1
-        - /Odometry1/Covariance1
-        - /PlannerViz1/BestPaths1/Namespaces1
-        - /PlannerViz1/ShortestPaths1/Namespaces1
-        - /PlannerViz1/RobotState1/Namespaces1
-        - /PlannerViz1/PlanningWorkspace1/Namespaces1
-        - /PlannerViz1/PlanningGraph1/Namespaces1
-        - /PlannerViz1/Sampler1/Namespaces1
-        - /PlannerViz1/ShortestPathsClustering1/Namespaces1
+        - /PlannerViz1
+        - /PlannerViz1/RGlobalGraph1
         - /Sensors1/VLP1/Autocompute Value Bounds1
+        - /Voxblox_Red1
+        - /Voxblox_Red1/VoxbloxMesh1
+        - /Voxblox_Blue1
+        - /Voxblox_Blue1/VoxbloxMesh1
       Splitter Ratio: 0.5529412031173706
-    Tree Height: 574
+    Tree Height: 438
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -33,7 +30,6 @@ Panels:
     Name: Views
     Splitter Ratio: 0.5
   - Class: rviz/Time
-    Experimental: false
     Name: Time
     SyncMode: 0
     SyncSource: SurfacePCL
@@ -68,6 +64,8 @@ Visualization Manager:
       Displays:
         - Class: rviz/TF
           Enabled: false
+          Filter (blacklist): ""
+          Filter (whitelist): ""
           Frame Timeout: 15
           Frames:
             All Enabled: false
@@ -88,6 +86,7 @@ Visualization Manager:
           Name: BaseLink
           Radius: 0.20000000298023224
           Reference Frame: rmf_obelix/base_link
+          Show Trail: false
           Value: true
         - Alpha: 1
           Class: rviz/Axes
@@ -96,97 +95,56 @@ Visualization Manager:
           Name: World
           Radius: 0.10000000149011612
           Reference Frame: world
+          Show Trail: false
           Value: false
       Enabled: true
       Name: Axes
-    - Angle Tolerance: 0.10000000149011612
-      Class: rviz/Odometry
-      Covariance:
-        Orientation:
-          Alpha: 0.5
-          Color: 255; 255; 127
-          Color Style: Unique
-          Frame: Local
-          Offset: 1
-          Scale: 1
-          Value: true
-        Position:
-          Alpha: 0.30000001192092896
-          Color: 204; 51; 204
-          Scale: 1
-          Value: true
-        Value: false
-      Enabled: true
-      Keep: 1
-      Name: Odometry
-      Position Tolerance: 0.10000000149011612
-      Queue Size: 10
-      Shape:
-        Alpha: 1
-        Axes Length: 1
-        Axes Radius: 0.10000000149011612
-        Color: 255; 0; 0
-        Head Length: 0.20000000298023224
-        Head Radius: 0.4000000059604645
-        Shaft Length: 1
-        Shaft Radius: 0.20000000298023224
-        Value: Arrow
-      Topic: /ground_truth/odometry_throttled
-      Unreliable: false
-      Value: true
     - Class: rviz/Group
       Displays:
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/planning_failed
-          Name: PlanningFailed
+          Marker Topic: /red/vis/planning_failed
+          Name: RPlanningFailed
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/volumetric_gains
-          Name: VolumetricGain
+          Marker Topic: /red/vis/volumetric_gains
+          Name: RVolumetricGain
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/sensor_fov
-          Name: SensorFOV
+          Marker Topic: /red/vis/sensor_fov
+          Name: RSensorFOV
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /red/vis/best_planning_paths
+          Name: RBestPaths
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /red/vis/shortest_paths
+          Name: RShortestPaths
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /vis/best_planning_paths
-          Name: BestPaths
-          Namespaces:
-            best_path: true
-            vertices: true
-          Queue Size: 100
-          Value: true
-        - Class: rviz/MarkerArray
-          Enabled: true
-          Marker Topic: /vis/shortest_paths
-          Name: ShortestPaths
-          Namespaces:
-            best_leaf_vertices: false
-            frontiers: true
-            gain: false
-            heading: false
-            leaf_vertices: false
-            shortest_edges: false
-            vertices: false
-          Queue Size: 100
-          Value: true
-        - Class: rviz/MarkerArray
-          Enabled: true
-          Marker Topic: /vis/robot_state
-          Name: RobotState
+          Marker Topic: /red/vis/robot_state
+          Name: RRobotState
           Namespaces:
             extension: true
             extension_aligned: true
@@ -196,49 +154,49 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/planning_workspace
-          Name: PlanningWorkspace
+          Marker Topic: /red/vis/planning_workspace
+          Name: RPlanningWorkspace
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/planning_global_graph
-          Name: GlobalGraph
+          Marker Topic: /red/vis/planning_global_graph
+          Name: RGlobalGraph
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/planning_homing_path
-          Name: HomingPath
+          Marker Topic: /red/vis/planning_homing_path
+          Name: RHomingPath
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /vis/planning_graph
-          Name: PlanningGraph
+          Marker Topic: /red/vis/planning_graph
+          Name: RPlanningGraph
           Namespaces:
-            edges: false
+            edges: true
             vertices: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/sampler
-          Name: Sampler
+          Marker Topic: /red/vis/sampler
+          Name: RSampler
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /vis/ref_path
-          Name: RefPath
+          Marker Topic: /red/vis/ref_path
+          Name: RRefPath
           Namespaces:
             ref_path: true
             vertices: true
@@ -246,58 +204,207 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/ray_casting
-          Name: RayCasting
+          Marker Topic: /red/vis/ray_casting
+          Name: RRayCasting
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/shortest_path_clustering
-          Name: ShortestPathsClustering
+          Marker Topic: /red/vis/shortest_path_clustering
+          Name: RShortestPathsClustering
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /vis/state_history
-          Name: StateHist
+          Marker Topic: /red/vis/state_history
+          Name: RStateHist
           Namespaces:
             {}
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
-          Enabled: true
-          Marker Topic: /vis/planning_global_path
-          Name: PlanningGlobalPath
+          Enabled: false
+          Marker Topic: /red/vis/planning_global_path
+          Name: RPlanningGlobalPath
           Namespaces:
             {}
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/MarkerArray
-          Enabled: true
-          Marker Topic: /vis/no_gain_zone
-          Name: NoGainZone
+          Enabled: false
+          Marker Topic: /red/vis/no_gain_zone
+          Name: RNoGainZone
           Namespaces:
             {}
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/Marker
-          Enabled: true
-          Marker Topic: /gbplanner/go_to_waypoint_pose_visualization
-          Name: GoToWaypointVis
+          Enabled: false
+          Marker Topic: /red/gbplanner/go_to_waypoint_pose_visualization
+          Name: RGoToWaypointVis
           Namespaces:
             {}
           Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/planning_failed
+          Name: BPlanningFailed
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/volumetric_gains
+          Name: BVolumetricGain
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/sensor_fov
+          Name: BSensorFOV
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/best_planning_paths
+          Name: BBestPaths
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/shortest_paths
+          Name: BShortestPaths
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /blue/vis/robot_state
+          Name: BRobotState
+          Namespaces:
+            extension: true
+            extension_aligned: true
+            heading: true
+            size: true
+          Queue Size: 100
           Value: true
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/planning_workspace
+          Name: BPlanningWorkspace
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/planning_global_graph
+          Name: BGlobalGraph
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/planning_homing_path
+          Name: BHomingPath
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /blue/vis/planning_graph
+          Name: BPlanningGraph
+          Namespaces:
+            edges: true
+            vertices: true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/sampler
+          Name: BSampler
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /blue/vis/ref_path
+          Name: BRefPath
+          Namespaces:
+            ref_path: true
+            vertices: true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/ray_casting
+          Name: BRayCasting
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/shortest_path_clustering
+          Name: BShortestPathsClustering
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/state_history
+          Name: BStateHist
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/planning_global_path
+          Name: BPlanningGlobalPath
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/vis/no_gain_zone
+          Name: BNoGainZone
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/Marker
+          Enabled: false
+          Marker Topic: /blue/gbplanner/go_to_waypoint_pose_visualization
+          Name: BGoToWaypointVis
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
       Enabled: true
       Name: PlannerViz
     - Class: rviz/Group
       Displays:
         - Class: rviz/Image
-          Enabled: false
+          Enabled: true
           Image Topic: /m100/camera_blackfly/image_raw
           Max Value: 1
           Median window: 5
@@ -307,7 +414,7 @@ Visualization Manager:
           Queue Size: 2
           Transport Hint: raw
           Unreliable: false
-          Value: false
+          Value: true
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
@@ -341,15 +448,15 @@ Visualization Manager:
     - Class: rviz/Group
       Displays:
         - Class: voxblox_rviz_plugin/VoxbloxMesh
-          Enabled: false
+          Enabled: true
           Name: VoxbloxMesh
           Queue Size: 10
-          Topic: /gbplanner_node/mesh
+          Topic: /red/gbplanner_node/mesh
           Unreliable: false
-          Value: false
+          Value: true
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /gbplanner_node/occupied_nodes
+          Marker Topic: /red/gbplanner_node/occupied_nodes
           Name: Occupied
           Namespaces:
             {}
@@ -378,7 +485,7 @@ Visualization Manager:
           Size (Pixels): 3
           Size (m): 0.05000000074505806
           Style: Flat Squares
-          Topic: /gbplanner_node/tsdf_pointcloud
+          Topic: /red/gbplanner_node/tsdf_pointcloud
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
@@ -386,8 +493,8 @@ Visualization Manager:
         - Alpha: 0.800000011920929
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 6.100000381469727
-            Min Value: -2.299999952316284
+            Max Value: 17.325000762939453
+            Min Value: -0.07500004768371582
             Value: true
           Axis: Z
           Channel Name: intensity
@@ -406,13 +513,88 @@ Visualization Manager:
           Size (Pixels): 1
           Size (m): 0.009999999776482582
           Style: Points
-          Topic: /gbplanner_node/surface_pointcloud
+          Topic: /red/gbplanner_node/surface_pointcloud
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
       Enabled: true
-      Name: Voxblox
+      Name: Voxblox_Red
+    - Class: rviz/Group
+      Displays:
+        - Class: voxblox_rviz_plugin/VoxbloxMesh
+          Enabled: true
+          Name: VoxbloxMesh
+          Queue Size: 10
+          Topic: /blue/gbplanner_node/mesh
+          Unreliable: false
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /blue/gbplanner_node/occupied_nodes
+          Name: Occupied
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Alpha: 1
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 255; 255
+          Color Transformer: Intensity
+          Decay Time: 0
+          Enabled: false
+          Invert Rainbow: true
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: Tsdf
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.05000000074505806
+          Style: Flat Squares
+          Topic: /blue/gbplanner_node/tsdf_pointcloud
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: false
+        - Alpha: 0.800000011920929
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 17.325000762939453
+            Min Value: -0.07500004768371582
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 255; 255
+          Color Transformer: AxisColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: SurfacePCL
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 1
+          Size (m): 0.009999999776482582
+          Style: Points
+          Topic: /blue/gbplanner_node/surface_pointcloud
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: true
+      Enabled: true
+      Name: Voxblox_Blue
     - Class: rviz/MarkerArray
       Enabled: false
       Marker Topic: /pci_command_trajectory_vis
@@ -421,6 +603,66 @@ Visualization Manager:
         {}
       Queue Size: 100
       Value: false
+    - Class: rviz/InteractiveMarkers
+      Enable Transparency: true
+      Enabled: false
+      Name: InteractiveMarkers
+      Show Axes: false
+      Show Descriptions: true
+      Show Visual Aids: false
+      Update Topic: /semantics/update
+      Value: false
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /red/segment_vicinity
+      Name: Marker
+      Namespaces:
+        semantic_points: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /blue/segment_vicinity
+      Name: Marker
+      Namespaces:
+        semantic_points: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Image
+      Enabled: false
+      Image Topic: /blue/camera/color/image_raw
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Image
+      Normalize Range: true
+      Queue Size: 2
+      Transport Hint: raw
+      Unreliable: false
+      Value: false
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /cluster_markers
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
+    - Class: voxblox_rviz_plugin/VoxbloxMesh
+      Enabled: true
+      Name: VoxbloxMesh
+      Queue Size: 10
+      Topic: /red/gbplanner_node/cropped_mesh
+      Unreliable: false
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /red/visualization_path
+      Name: Marker
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 0; 0; 0
@@ -449,7 +691,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 26.918447494506836
+      Distance: 86.38893127441406
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -457,29 +699,29 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 3.0146896839141846
-        Y: -1.548342227935791
-        Z: 1.431899070739746
+        X: -2.777501344680786
+        Y: 18.083385467529297
+        Z: 7.099874496459961
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.8697964549064636
+      Pitch: 1.5647963285446167
       Target Frame: rmf_obelix/base_link
-      Yaw: 3.615403413772583
+      Yaw: 4.70408296585083
     Saved: ~
 Window Geometry:
   Displays:
-    collapsed: false
+    collapsed: true
   GbPlanner Control:
-    collapsed: false
+    collapsed: true
   Height: 1016
-  Hide Left Dock: false
+  Hide Left Dock: true
   Hide Right Dock: true
   Image:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000400000000000001560000035dfc020000000cfb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d0000027b000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000a0049006d0061006700650000000190000002310000001600fffffffb0000000c00430061006d00650072006100000003affffffff60000000000000000fb0000000a0049006d00610067006501000002dc000000c90000000000000000fb00000022004700620050006c0061006e006e0065007200200043006f006e00740072006f006c01000002be000000dc000000dc00ffffff000000010000010f0000035dfc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d0000035d000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e100000197000000030000072d0000003bfc0100000002fb0000000800540069006d006501000000000000072d0000026c00fffffffb0000000800540069006d00650100000000000004500000000000000000000005d10000035d00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000400000000000001560000035dfc0200000010fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073000000003d000001f3000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000a0049006d00610067006500000001460000013d0000001600fffffffb0000000c00430061006d00650072006100000003affffffff60000000000000000fb0000000a0049006d0061006700650000000167000000720000001600fffffffb00000022004700620050006c0061006e006e0065007200200043006f006e00740072006f006c0000000236000001640000013100fffffffb0000000a0049006d0061006700650000000256000000770000000000000000fb0000000a0049006d00610067006501000002d3000000c70000000000000000fb0000000a0049006d00610067006501000002b1000000e90000000000000000fb0000000a0049006d00610067006501000002430000004f0000000000000000000000010000010f0000035dfc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d0000035d000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000007340000003bfc0100000002fb0000000800540069006d0065010000000000000734000003bc00fffffffb0000000800540069006d00650100000000000004500000000000000000000007340000035d00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
     collapsed: false
   Time:
@@ -488,6 +730,6 @@ Window Geometry:
     collapsed: false
   Views:
     collapsed: true
-  Width: 1837
-  X: 83
+  Width: 1844
+  X: 76
   Y: 27

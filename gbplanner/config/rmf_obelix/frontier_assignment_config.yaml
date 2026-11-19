@@ -1,0 +1,4 @@
+communication_radius_min: 20.0
+communication_radius_max: 200.0
+central_raduis : 50
+Central_Unit_pose: [25, 0, 3]

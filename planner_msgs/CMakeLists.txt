@@ -9,6 +9,9 @@ actionlib_msgs)
 add_service_files(
   DIRECTORY srv
   FILES
+  GetFrontierGains.srv
+  inspection_v3t.srv
+  DistanceAndRole.srv
   planner_srv.srv
   planner_global.srv
   planner_search.srv
@@ -33,6 +36,7 @@ add_service_files(
   planner_go_to_waypoint.srv
   planner_dynamic_global_bound.srv
   planner_set_planning_mode.srv
+  FrontierRequest.srv
 )
 
 add_message_files(

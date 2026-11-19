@@ -4,32 +4,51 @@
 #include <opencv2/opencv.hpp>
 #include <pcl/common/transforms.h>
 #include <tf/transform_listener.h>
+#include <nav_msgs/Odometry.h>
+#include <trajectory_msgs/MultiDOFJointTrajectory.h>
+#include <geometry_msgs/Transform.h>
+#include <geometry_msgs/Twist.h>
+#include <geometry_msgs/PoseArray.h>
+#include "std_srvs/SetBool.h" // Include the SetBool service definition
+#include <random>
+#include <vector>
+#include <Eigen/Dense>
+#include <mutex>
+#include <chrono>
+#include <thread>
+#include <cmath> 
+#include "std_srvs/SetBool.h"
+#include <tf/tf.h>  // Include TF for quaternion handling
+#include <std_msgs/Bool.h>
+#include <planner_msgs/GetFrontierGains.h>
 
 #define SQ(x) (x * x)
 
 namespace explorer {
 
+// Constructor with namespace handling
 Rrg::Rrg(const ros::NodeHandle& nh, const ros::NodeHandle& nh_private)
-    : nh_(nh), nh_private_(nh_private) {
-  map_manager_ =
-      new MapManagerVoxblox<MapManagerVoxbloxServer, MapManagerVoxbloxVoxel>(
-          nh_, nh_private_);
-
-  adaptive_obb_ = new AdaptiveObb(map_manager_);
-
-  initializeAttributes();
+    : nh_(nh), nh_private_(nh_private) { 
+    std::string ns = nh.getNamespace();
+    ns = (ns == "/") ? "" : ns;  // Normalize the namespace
+    map_manager_ = new MapManagerVoxblox<MapManagerVoxbloxServer, MapManagerVoxbloxVoxel>(nh_, nh_private_);
+    adaptive_obb_ = new AdaptiveObb(map_manager_);
+    initializeAttributes(ns);  // Ensure namespace is passed
 }
 
+// Make sure to handle the namespace in all constructors
 Rrg::Rrg(const ros::NodeHandle& nh, const ros::NodeHandle& nh_private,
-         MapManagerVoxblox<MapManagerVoxbloxServer, MapManagerVoxbloxVoxel>*
-             map_manager)
+         MapManagerVoxblox<MapManagerVoxbloxServer, MapManagerVoxbloxVoxel>* map_manager)
     : nh_(nh), nh_private_(nh_private), map_manager_(map_manager) {
+  std::string ns = nh_.getNamespace();
+  ns = (ns == "/") ? "" : ns; // Normalize the namespace
   adaptive_obb_ = new AdaptiveObb(map_manager_);
-
-  initializeAttributes();
+  initializeAttributes(ns);
 }
 
-void Rrg::initializeAttributes() {
+
+
+void Rrg::initializeAttributes(const std::string& ns) {
   visualization_ = new Visualization(nh_, nh_private_);
 
   geofence_manager_.reset(new GeofenceManager());
@@ -65,43 +84,49 @@ void Rrg::initializeAttributes() {
   auto_global_planner_trig_ = false;
   global_exploration_ongoing_ = false;
   local_exploration_ongoing_ = false;
+    // bool is_processing = false;
+  
 
-  free_cloud_pub_ =
-      nh_.advertise<sensor_msgs::PointCloud2>("freespace_pointcloud", 10);
-
-  pci_reset_pub_ =
-      nh_.advertise<std_msgs::Bool>("planner_control_interface/msg/reset", 10);
-
-  //
-  global_graph_update_timer_ =
-      nh_.createTimer(ros::Duration(kGlobalGraphUpdateTimerPeriod),
-                      &Rrg::expandGlobalGraphTimerCallback, this);
+  done_inspection_ = nh_.advertise<std_msgs::Bool>(ns + "/done_inspection", 10);
+  free_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(ns + "/freespace_pointcloud", 10);
+  pci_reset_pub_ = nh_.advertise<std_msgs::Bool>(ns + "/planner_control_interface/msg/reset", 10);
 
   global_graph_frontier_addition_timer_ = nh_.createTimer(
       ros::Duration(kGlobalGraphFrontierAdditionTimerPeriod),
       &Rrg::expandGlobalGraphFrontierAdditionTimerCallback, this);
 
-  free_pointcloud_update_timer_ =
-      nh_.createTimer(ros::Duration(kFreePointCloudUpdatePeriod),
-                      &Rrg::freePointCloudtimerCallback, this);
+  global_graph_update_timer_ = nh_.createTimer(ros::Duration(kGlobalGraphUpdateTimerPeriod), &Rrg::expandGlobalGraphTimerCallback, this);
+  free_pointcloud_update_timer_ = nh_.createTimer(ros::Duration(kFreePointCloudUpdatePeriod), &Rrg::freePointCloudtimerCallback, this);
+
 
   // FIX-ME
-  semantics_subscriber_ =
-      nh_.subscribe("semantic_location", 100, &Rrg::semanticsCallback, this);
+    
+  semantics_subscriber_ = nh_.subscribe(ns + "/semantic_location", 100, &Rrg::semanticsCallback, this);
+  adjusted_points_pub_ = nh_.advertise<trajectory_msgs::MultiDOFJointTrajectory>(ns + "/inspection_trajectory", 10);
 
-  stop_srv_subscriber_ = nh_.subscribe("planner_control_interface/stop_request",
-                                       100, &Rrg::stopMsgCallback, this);
+  near_obstacle = nh_.advertise<trajectory_msgs::MultiDOFJointTrajectory>(ns + "/near_obstacle", 10);
+
+  // Determine the namespace and set up subscribers accordingly
+  std::string local_ns = ns.empty() ? "red" : ns.substr(1);  // Assumes ns is either "/red" or "/blue"
+ std::string other_robot_ns = (ns == "/red") ? "/blue" : "/red";  // Assuming the namespace for the other robot
+  other_graph_sub_ = nh_.subscribe(other_robot_ns + "/local_graph", 10, &Rrg::otherRobotGraphCallback, this);
+
+  local_graph_pub_ = nh_.advertise<planner_msgs::Graph>(ns + "/local_graph", 10);
+
+  stop_srv_subscriber_ = nh_.subscribe(ns + "/planner_control_interface/stop_request", 100, &Rrg::stopMsgCallback, this);
+ // points_sub_ = nh_.subscribe("points_topic", 10, &Rrg::pointsCallback, this);
 
   time_log_pub_ =
       nh_.advertise<std_msgs::Float32MultiArray>("gbp_time_log", 10);
 
-  pci_homing_ = nh_.serviceClient<std_srvs::Trigger>(
-      "planner_control_interface/std_srvs/homing_trigger");
-  landing_srv_client_ = nh_.serviceClient<std_srvs::Empty>(
-      "land_srv");  // The service name should be remapped in the launch file
+  pci_homing_ = nh_.serviceClient<std_srvs::Trigger>(ns + "/planner_control_interface/std_srvs/homing_trigger");
+  landing_srv_client_ = nh_.serviceClient<std_srvs::Empty>(ns + "/land_srv");
+  frontier_request_client_ = nh_.serviceClient<planner_msgs::FrontierRequest>("/assign_frontier");
 
   listener_ = new tf::TransformListener();
 }
+
+
 
 void Rrg::reset() {
   // Check if the local graph frontiers have been added to the global graph
@@ -498,6 +523,657 @@ ProjectedEdgeStatus Rrg::getProjectedEdgeStatus(
   // Edge is admissible
   projected_edge_out = projected_edge;
   return ProjectedEdgeStatus::kAdmissible;
+}
+#include <algorithm>
+#include <unordered_set>
+#include <Eigen/Dense>
+#include <geometry_msgs/Pose.h>
+#include <trajectory_msgs/MultiDOFJointTrajectory.h>
+#include <ros/ros.h>
+#include <vector>
+
+geometry_msgs::Quaternion computeOrientation(const Eigen::Vector3d& from, const Eigen::Vector3d& to) {
+    Eigen::Vector3d direction = (to - from).normalized();
+    Eigen::Quaterniond quat = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d::UnitX(), direction);
+    geometry_msgs::Quaternion orientation;
+    orientation.x = quat.x();
+    orientation.y = quat.y();
+    orientation.z = quat.z();
+    orientation.w = quat.w();
+    return orientation;
+}
+
+geometry_msgs::Pose vectorToPose(const Eigen::Vector3d& vec) {
+    geometry_msgs::Pose pose;
+    pose.position.x = vec[0];
+    pose.position.y = vec[1];
+    pose.position.z = vec[2];
+    pose.orientation.w = 1.0;  // Default orientation
+    return pose;
+}
+
+bool interpolatePathAndCreateVertices(GraphManager* graph, std::vector<Vertex*>& vertices, int& next_vertex_id, const std::vector<geometry_msgs::Pose>& input_path, double interpolation_distance, std::vector<geometry_msgs::Pose>& output_path, const Eigen::Vector3d& /*start_pos*/) {
+    if (input_path.size() < 2) return false;
+
+    output_path.clear();
+    output_path.push_back(input_path.front());
+
+    ROS_INFO("Starting Interpolation:");
+    ROS_INFO("Initial Path:");
+    for (const auto& pose : input_path) {
+        ROS_INFO("Pose: [%f, %f, %f]", pose.position.x, pose.position.y, pose.position.z);
+    }
+
+    for (size_t i = 1; i < input_path.size(); ++i) {
+        const geometry_msgs::Pose& start_point = output_path.back();
+        const geometry_msgs::Pose& end_point = input_path[i];
+
+        double distance = std::sqrt(
+            std::pow(end_point.position.x - start_point.position.x, 2) +
+            std::pow(end_point.position.y - start_point.position.y, 2) +
+            std::pow(end_point.position.z - start_point.position.z, 2)
+        );
+
+        ROS_INFO("Interpolating from [%f, %f, %f] to [%f, %f, %f] with distance %f",
+                 start_point.position.x, start_point.position.y, start_point.position.z,
+                 end_point.position.x, end_point.position.y, end_point.position.z,
+                 distance);
+
+        int num_steps = std::ceil(distance / interpolation_distance);
+        for (int step = 1; step <= num_steps; ++step) {
+            geometry_msgs::Pose interp_pose;
+            double ratio = step / static_cast<double>(num_steps);
+            interp_pose.position.x = start_point.position.x + ratio * (end_point.position.x - start_point.position.x);
+            interp_pose.position.y = start_point.position.y + ratio * (end_point.position.y - start_point.position.y);
+            interp_pose.position.z = start_point.position.z + ratio * (end_point.position.z - start_point.position.z);
+
+            // Validate interpolated values
+            if (!std::isfinite(interp_pose.position.x) || !std::isfinite(interp_pose.position.y) || !std::isfinite(interp_pose.position.z)) {
+                ROS_ERROR("Invalid interpolated position: [%f, %f, %f]", interp_pose.position.x, interp_pose.position.y, interp_pose.position.z);
+                continue; // Skip invalid points
+            }
+
+            output_path.push_back(interp_pose);
+
+            ROS_INFO("Interpolated Point: [%f, %f, %f]", interp_pose.position.x, interp_pose.position.y, interp_pose.position.z);
+
+            // Create a new vertex at the interpolated point
+            Eigen::Vector3d position(interp_pose.position.x, interp_pose.position.y, interp_pose.position.z);
+            Vertex* new_vertex = new Vertex(next_vertex_id++, StateVec(position[0], position[1], position[2], 0.0));  // Assuming 0.0 for the fourth state value
+            graph->addVertex(new_vertex);
+            vertices.push_back(new_vertex);
+
+            ROS_INFO("Added Vertex: ID = %d, Position = [%f, %f, %f]", new_vertex->id, position[0], position[1], position[2]);
+        }
+
+        // Ensure the end_point is added if it's the last point
+        if (i == input_path.size() - 1) {
+            output_path.push_back(end_point);
+
+            // Create a new vertex at the end point
+            Eigen::Vector3d end_position(end_point.position.x, end_point.position.y, end_point.position.z);
+            Vertex* end_vertex = new Vertex(next_vertex_id++, StateVec(end_position[0], end_position[1], end_position[2], 0.0));
+            graph->addVertex(end_vertex);
+            vertices.push_back(end_vertex);
+
+            ROS_INFO("Added Final Vertex: ID = %d, Position = [%f, %f, %f]", end_vertex->id, end_position[0], end_position[1], end_position[2]);
+        }
+    }
+
+    ROS_INFO("Final Interpolated Path:");
+    for (const auto& pose : output_path) {
+        ROS_INFO("Pose: [%f, %f, %f]", pose.position.x, pose.position.y, pose.position.z);
+    }
+
+    return true;
+}
+
+
+
+
+
+
+Eigen::Vector3d generateInBall(const Eigen::Vector3d& center, double radius) {
+    Eigen::Vector3d point;
+    double length;
+    do {
+        point = Eigen::Vector3d::Random();
+        length = point.norm();
+    } while (length > 1.0);
+    point = center + point * radius;
+    return point;
+}
+
+void Rrg::generateGraphFromVertex(Vertex* start_vertex) {
+    std::cout << "Inside generateGraphFromVertex" << std::endl;
+    if (!start_vertex) {
+        std::cerr << "Invalid start vertex provided." << std::endl;
+        return;
+    }
+    if (exploration_graph_ != NULL) exploration_graph_->reset();
+    exploration_graph_.reset(new GraphManager());
+
+    // Explicitly setting the root vertex ID to 0 and adding to graph
+    start_vertex->id = 0;
+    exploration_graph_->addVertex(start_vertex);
+    std::vector<Vertex*> vertices;  // To track all vertices manually
+    vertices.push_back(start_vertex);  // Include the root vertex
+
+    int num_vertices_added = 1;
+    int next_vertex_id = 1;
+    Eigen::Vector3d pos = start_vertex->state.head(3);
+    StateVec start_state(start_vertex->state[0], start_vertex->state[1], start_vertex->state[2], start_vertex->state[3]);  // Use actual state
+
+    // Find the nearest vertex to the current state
+    Vertex* temp_nearest_vertex;
+    if (!global_graph_->getNearestVertex(&start_state, &temp_nearest_vertex)) {
+        std::cout << "[SEMANTICS]: No nearest vertex found." << std::endl;
+        ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertex found.");
+        return;
+    }
+
+    std::vector<Vertex*> nearest_vertices;
+    Vertex* nearest_vertex;
+    Eigen::Vector3d nv(temp_nearest_vertex->state[0], temp_nearest_vertex->state[1], temp_nearest_vertex->state[2]);
+
+    // Range of search = 2 * closest node
+    if (!global_graph_->getNearestVertices(&start_state, 2.0 * ((start_state.head(3) - nv).norm()), &nearest_vertices)) {
+        ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertices found.");
+        return;
+    }
+
+std::vector<geometry_msgs::Pose> path_ret;
+bool path_status = false;
+const int kMaxNumTrials = 5;
+geometry_msgs::Pose start, end;
+
+for (int i = 0; i < kMaxNumTrials; ++i) {
+    for (int j = 0; j < nearest_vertices.size(); ++j) {
+        nearest_vertex = nearest_vertices[j];
+
+        // End position is the nearest vertex to the start vertex
+        end.position.x = nearest_vertex->state[0];
+        end.position.y = nearest_vertex->state[1];
+        end.position.z = nearest_vertex->state[2];
+        end.orientation.x = 0.0;
+        end.orientation.y = 0.0;
+        end.orientation.z = 0.0;
+        end.orientation.w = 1.0;
+
+        // Start position is the current state
+        start.position.x = current_state_[0];
+        start.position.y = current_state_[1];
+        start.position.z = current_state_[2];
+        start.orientation.x = 0.0;
+        start.orientation.y = 0.0;
+        start.orientation.z = 0.0;
+        start.orientation.w = 1.0;
+
+        path_status = search(start, end, true, path_ret);
+        if (path_status) {
+            bool valid_path = true;
+            // Check if any point in the path has coordinates (0, 0)
+            for (const auto& pose : path_ret) {
+                if (pose.position.x == 0 && pose.position.y == 0) {
+                    valid_path = false;
+                    ROS_WARN("Found a point with (0, 0) coordinates in the path. Trying another path...");
+                    break;
+                }
+            }
+            if (!valid_path) continue;
+
+            std::vector<geometry_msgs::Pose> interpolated_path;
+            // if (interpolatePathAndCreateVertices(exploration_graph_.get(), vertices, next_vertex_id, path_ret, 0.1, interpolated_path, pos)) {
+            //     std::cout << "Nearest Vertex found: ID = " << nearest_vertex->id << ", State = [" << nearest_vertex->state.transpose() << "]" << std::endl;
+            //     break;
+            // } else {
+            //     path_status = false; // Reset path status if interpolation fails
+            // }
+        }
+    }
+    if (path_status) {
+        break;
+    }
+}
+
+
+
+    trajectory_msgs::MultiDOFJointTrajectory trajMsg1;
+    trajMsg1.header.stamp = ros::Time::now();
+    trajMsg1.header.frame_id = "world";
+
+    if (!path_status) {
+        std::cout << "No feasible path found from current state to a safe point near the start vertex." << std::endl;
+        geometry_msgs::Pose mid;
+
+        mid.position.x = 2 * (start.position.x + end.position.x) / 3;
+        mid.position.y = 2 * (start.position.y + end.position.y) / 3;
+        mid.position.z = 2 * (start.position.z + end.position.z) / 3;
+        mid.orientation.w = 1.0;
+
+        // Adding start, mid, and end points to the trajectory
+        std::vector<geometry_msgs::Pose> path_points;
+        path_points.push_back(start);
+        path_points.push_back(mid);
+        path_points.push_back(end);
+
+        for (auto& pose : path_points) {
+            trajectory_msgs::MultiDOFJointTrajectoryPoint point;
+            geometry_msgs::Transform transform;
+            transform.translation.x = pose.position.x;
+            transform.translation.y = pose.position.y;
+            transform.translation.z = pose.position.z;
+            transform.rotation = pose.orientation;
+            point.transforms.push_back(transform);
+            trajMsg1.points.push_back(point);
+        }
+    } else {
+        std::cout << "Feasible path found from current state to a safe point near the start vertex." << std::endl;
+
+        // If path is found, add points to trajectory message
+        std::vector<geometry_msgs::Pose> interpolated_path;
+        // interpolatePathAndCreateVertices(exploration_graph_.get(), vertices, next_vertex_id, path_ret, 0.1, interpolated_path, pos);
+        for (auto& pose : interpolated_path) {
+            trajectory_msgs::MultiDOFJointTrajectoryPoint point;
+            geometry_msgs::Transform transform;
+            transform.translation.x = pose.position.x;
+            transform.translation.y = pose.position.y;
+            transform.translation.z = pose.position.z;
+            transform.rotation = pose.orientation;
+            point.transforms.push_back(transform);
+            trajMsg1.points.push_back(point);
+        }
+    }
+
+    near_obstacle.publish(trajMsg1);
+    visualization_->visualizeRefPath(path_ret);
+
+ros::Duration(5).sleep();
+Eigen::Vector3d min_val, max_val, rotations, mean_val, std_val;
+
+min_val = adaptive_orig_min_val_;
+max_val = adaptive_orig_max_val_;
+adaptive_obb_->constructBoundingBox(pos, min_val, max_val, rotations, mean_val, std_val);
+
+// 2. Update bounding box
+local_adaptive_params_.setBound(min_val, max_val);
+local_adaptive_params_.setRotation(rotations);
+
+// 3. Update sampler
+random_sampler_adaptive_.setBound(min_val, max_val);
+random_sampler_adaptive_.setRotation(rotations);
+// Note: doesn't affect sampler when kUniform, kConst
+random_sampler_adaptive_.setDistributionParams(mean_val, std_val);
+random_sampler_adaptive_.reset();
+
+// Sample points around the start vertex
+std::vector<Vertex*> key_points;  // Container for high gain points and points near clusters
+
+const int random_points_count = 200;  // Number of random points to generate
+double radius = 5.0;  // Set the desired radius here
+for (int i = 0; i < random_points_count; ++i) {
+    Eigen::Vector3d random_point = pos + radius * Eigen::Vector3d::Random().normalized();  // Generate points within a ball
+    Vertex* new_vertex = new Vertex(-1, StateVec::Zero());
+    if (sampleVertexAround(random_point, random_sampler_adaptive_, *new_vertex, radius) && validateSample(new_vertex)) {
+        new_vertex->id = next_vertex_id++;
+        exploration_graph_->addVertex(new_vertex);
+        vertices.push_back(new_vertex);  // Keep track of this vertex
+        num_vertices_added++;
+
+        // ROS_INFO("Sampled Vertex: ID = %d, Position = [%f, %f, %f]", new_vertex->id, new_vertex->state[0], new_vertex->state[1], new_vertex->state[2]);
+
+        // Add to key points if near cluster or high gain
+        key_points.push_back(new_vertex);
+
+        std::vector<Vertex*> nearby_vertices;
+        if (exploration_graph_->getNearestVertices(&new_vertex->state, 4.0, &nearby_vertices)) {
+            for (Vertex* nearby_vertex : nearby_vertices) {
+                if (nearby_vertex != new_vertex) {
+                    Eigen::Vector3d direction = new_vertex->state.head(3) - nearby_vertex->state.head(3);
+                    double direction_norm = direction.norm();
+                    if (direction_norm != 0) {
+                        exploration_graph_->addEdge(new_vertex, nearby_vertex, direction_norm);
+                    }
+                }
+            }
+        }
+    } else {
+        delete new_vertex;
+    }
+}
+
+// Find the nearest vertex to each cluster center
+std::vector<Eigen::Vector3d> cluster_centers = map_manager_->forHoleCoverage(voxblox::Point(pos[0], pos[1], pos[2]), radius);
+for (const auto& center : cluster_centers) {
+    Vertex* nearest_vertex;
+    StateVec center_state(center[0], center[1], center[2], 0.0);
+    if (exploration_graph_->getNearestVertex(&center_state, &nearest_vertex)) {
+        key_points.push_back(nearest_vertex);
+        // ROS_INFO("Cluster Center Nearest Vertex: ID = %d, Position = [%f, %f, %f]", nearest_vertex->id, nearest_vertex->state[0], nearest_vertex->state[1], nearest_vertex->state[2]);
+    }
+}
+
+// Identify the top 20 gain points
+std::sort(vertices.begin(), vertices.end(), [](const Vertex* a, const Vertex* b) {
+    return a->vol_gain.num_unknown_voxels > b->vol_gain.num_unknown_voxels;
+});
+for (int i = 0; i < 20 && i < vertices.size(); ++i) {
+    key_points.push_back(vertices[i]);
+    ROS_INFO("Top Gain Vertex: ID = %d, Position = [%f, %f, %f]", vertices[i]->id, vertices[i]->state[0], vertices[i]->state[1], vertices[i]->state[2]);
+}
+
+// Select up to 20 points for the TSP path
+std::vector<Vertex*> selected_points;
+for (int i = 0; i < key_points.size() && selected_points.size() < 40; ++i) {
+    if (key_points[i]->state[0] == 0 && key_points[i]->state[1] == 0) {  // Check for (0, 0) coordinates
+        ROS_WARN("Skipping (0, 0) key point: ID = %d, Position = [%f, %f, %f]", key_points[i]->id, key_points[i]->state[0], key_points[i]->state[1], key_points[i]->state[2]);
+        continue;
+    }
+    selected_points.push_back(key_points[i]);
+}
+
+// Remove points with (0, 0) coordinates before constructing the TSP path
+selected_points.erase(std::remove_if(selected_points.begin(), selected_points.end(), [](const Vertex* v) {
+    return v->state[0] == 0 && v->state[1] == 0;
+}), selected_points.end());
+
+// Solve TSP using a simple nearest neighbor heuristic
+int n = selected_points.size();
+Eigen::MatrixXd dist_matrix(n, n);
+for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < n; ++j) {
+        dist_matrix(i, j) = (selected_points[i]->state.head(3) - selected_points[j]->state.head(3)).norm();
+    }
+}
+
+// Nearest neighbor heuristic for TSP
+std::vector<Vertex*> tsp_path;
+std::vector<bool> visited(n, false);
+int current = 0;
+tsp_path.push_back(selected_points[current]);
+visited[current] = true;
+for (int step = 1; step < n; ++step) {
+    double min_dist = std::numeric_limits<double>::max();
+    int next = -1;
+    for (int i = 0; i < n; ++i) {
+        if (!visited[i] && dist_matrix(current, i) < min_dist) {
+            min_dist = dist_matrix(current, i);
+            next = i;
+        }
+    }
+    if (next != -1) {
+        tsp_path.push_back(selected_points[next]);
+        visited[next] = true;
+        current = next;
+    }
+}
+tsp_path.push_back(selected_points[0]);  // Return to the starting point to complete the cycle
+
+// Convert the path to geometry_msgs::Pose and prepare for publishing
+std::vector<geometry_msgs::Pose> pathPoses;
+for (Vertex* v : tsp_path) {
+    geometry_msgs::Pose pose = vectorToPose(v->state.head(3));
+    pose.orientation = computeOrientation(v->state.head(3), pos);  // Update orientation to look at the start vertex
+
+    // Check for (0, 0) coordinates before adding
+    if (pose.position.x == 0 && pose.position.y == 0) {
+        ROS_WARN("Skipping converted Pose with invalid point (0, 0). Vertex ID = %d", v->id);
+        continue;
+    }
+
+    pathPoses.push_back(pose);
+    // ROS_INFO("Path Pose: Position = [%f, %f, %f], Orientation = [%f, %f, %f, %f]", pose.position.x, pose.position.y, pose.position.z, pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w);
+}
+
+// Interpolate the path
+const double kInterpolationDistance = 0.1;  // planning_params_.path_interpolation_distance;
+std::vector<geometry_msgs::Pose> interp_path;
+
+// Log the input path before interpolation
+ROS_INFO("Input Path for Interpolation:");
+for (const auto& pose : pathPoses) {
+    // ROS_INFO("Input Path Pose: Position = [%f, %f, %f], Orientation = [%f, %f, %f, %f]",
+        // pose.position.x, pose.position.y, pose.position.z,
+        // pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w);
+}
+
+// if (interpolatePathAndCreateVertices(exploration_graph_.get(), vertices, next_vertex_id, pathPoses, kInterpolationDistance, interp_path, pos)) {
+//     pathPoses = interp_path;
+    
+//     // Log the interpolated path
+//     // ROS_INFO("Interpolated Path:");
+//     for (const auto& pose : interp_path) {
+//         // ROS_INFO("Interpolated Path Point: Position = [%f, %f, %f], Orientation = [%f, %f, %f, %f]",
+//             // pose.position.x, pose.position.y, pose.position.z,
+//             // pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w);
+//     }
+// }
+
+
+// Preparing MultiDOFJointTrajectory message
+trajectory_msgs::MultiDOFJointTrajectory trajMsg;
+trajMsg.header.stamp = ros::Time::now();
+trajMsg.header.frame_id = "world";
+for (const auto& pose : pathPoses) {
+    trajectory_msgs::MultiDOFJointTrajectoryPoint point;
+    geometry_msgs::Transform transform;
+    transform.translation.x = pose.position.x;
+    transform.translation.y = pose.position.y;
+    transform.translation.z = pose.position.z;
+    transform.rotation = pose.orientation;
+    point.transforms.push_back(transform);
+    trajMsg.points.push_back(point);
+}
+
+// Publish the trajectory
+adjusted_points_pub_.publish(trajMsg);
+std::cout << "Trajectory published to " << adjusted_points_pub_.getTopic() << "\n";
+
+// Visualization
+visualization_->visualizeRefPath(pathPoses);
+visualization_->visualizeGraph(exploration_graph_);
+
+std::cout << "Final graph generated with " << num_vertices_added << " vertices.\n";
+}
+// _____________________________________________________________________________________________________________________________
+
+// Update sampleVertexAround to use the correct generateAround method
+bool Rrg::sampleVertexAround(const Eigen::Vector3d& center, RandomSampler& random_sampler, Vertex& vertex, double radius) {
+    StateVec state;
+    bool hanging = false;
+    bool found = false;
+
+    int while_thres = 1000;  // magic number.
+    BoundedSpaceParams reduced_global_space = global_space_params_;
+    reduced_global_space.min_val += 0.5 * robot_box_size_;
+    reduced_global_space.max_val -= 0.5 * robot_box_size_;
+
+    while (!found && while_thres--) {
+        hanging = false;
+
+        // Generate a sample around the center within the given radius
+        random_sampler.generateAround(center, radius, state);
+
+        Eigen::Vector3d sample = state.head(3);
+        if (!reduced_global_space.isInsideSpace(sample)) continue;
+
+        if (robot_params_.type == RobotType::kGroundRobot) {
+            sample = Eigen::Vector3d(state[0], state[1], state[2]) + robot_params_.center_offset;
+            MapManager::VoxelStatus vs;
+            double ground_dist = projectSample(sample, vs);
+            if (vs == MapManager::VoxelStatus::kUnknown) {
+                hanging = true;
+            }
+
+            sample[2] -= (ground_dist - planning_params_.max_ground_height);
+            state[0] = sample[0];
+            state[1] = sample[1];
+            state[2] -= (ground_dist - planning_params_.max_ground_height);
+        }
+
+        // Check if surrounding area is free.
+        if (MapManager::VoxelStatus::kFree == map_manager_->getBoxStatus(
+            sample + robot_params_.center_offset, robot_box_size_, true)) {
+            random_sampler.pushSample(state, true);  // for debug purpose.
+            found = true;
+        } else {
+            stat_->num_vertices_fail++;
+            random_sampler.pushSample(state, false);
+            // hanging = false;
+        }
+    }
+    vertex.state = state;
+    vertex.is_hanging = hanging;
+    return found;
+}
+
+bool Rrg::validateSample(Vertex* vertex) {
+    Eigen::Vector3d sample = vertex->state.head(3);
+    BoundedSpaceParams reduced_global_space = global_space_params_;
+    reduced_global_space.min_val += 0.5 * robot_box_size_;
+    reduced_global_space.max_val -= 0.5 * robot_box_size_;
+
+    if (!reduced_global_space.isInsideSpace(sample)) {
+        return false;
+    }
+
+    if (robot_params_.type == RobotType::kGroundRobot) {
+        Eigen::Vector3d sample_with_offset = sample + robot_params_.center_offset;
+        MapManager::VoxelStatus vs;
+        double ground_dist = projectSample(sample_with_offset, vs);
+        if (vs == MapManager::VoxelStatus::kUnknown) {
+            vertex->is_hanging = true;
+        }
+
+        sample_with_offset[2] -= (ground_dist - planning_params_.max_ground_height);
+        vertex->state[0] = sample_with_offset[0];
+        vertex->state[1] = sample_with_offset[1];
+        vertex->state[2] -= (ground_dist - planning_params_.max_ground_height);
+    }
+
+    // Check if the surrounding area is free.
+    if (MapManager::VoxelStatus::kFree == map_manager_->getBoxStatus(
+            sample + robot_params_.center_offset, robot_box_size_, true)) {
+        return true;
+    }
+
+    return false;
+}
+
+
+void Rrg::semanticsCallback(
+    const planner_semantic_msgs::SemanticPoint& semantic) {
+  if (is_processing) {
+            std::cout << "Callback is currently processing. New call ignored." << std::endl;
+            return; // Ignore this call
+        }
+  
+  is_processing = true;
+
+  std::cout << "Inside semantic callback" << std::endl;
+  StateVec* new_state =
+      new StateVec(semantic.point.x, semantic.point.y, semantic.point.z, 0.0);
+
+
+  Vertex* new_vertex = new Vertex(0, *new_state); // Dereference new_state with '*new_state'
+
+  generateGraphFromVertex(new_vertex);
+  ros::Duration(50).sleep();    
+
+  std_msgs::Bool msg;
+  msg.data = true;  // Set to true or false based on your logic
+  std::cout << "I will publish done inspection" << std::endl;
+
+  done_inspection_.publish(msg);
+
+  is_processing = false; // Reset the flag after processing is complete
+
+  // Vertex* temp_nearest_vertex;
+  // if (!global_graph_->getNearestVertex(new_state, &temp_nearest_vertex)) {
+  //   std::cout << "[SEMANTICS]: No nearest vertex found."<< std::endl;
+  //   ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertex found.");
+  //   return;
+  // }
+
+  // std::vector<Vertex*> nearest_vertices;
+  // Vertex* nearest_vertex;
+  // Eigen::Vector3d nv(temp_nearest_vertex->state[0],
+  //                    temp_nearest_vertex->state[1],
+  //                    temp_nearest_vertex->state[2]);
+
+  // // Range of search = 2*closest node
+  // // if (!global_graph_->getNearestVertices(new_state, 2.0 * ((sem - nv).norm()),
+  // //                                        &nearest_vertices)) {
+  // //   ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertices found.");
+  // //   return;
+  // // }
+
+  // std::vector<geometry_msgs::Pose> path_ret;
+  // bool path_status = false;
+  // const int kMaxNumTrials = 5;
+  // for (int i = 0; (i < nearest_vertices.size()) && (i < kMaxNumTrials); ++i) {
+  //   nearest_vertex = nearest_vertices[i];
+  //   geometry_msgs::Pose start, end;
+  //   end.position.x = semantic.point.x;
+  //   end.position.y = semantic.point.y;
+  //   end.position.z = semantic.point.z;
+  //   end.orientation.x = 0.0;
+  //   end.orientation.y = 0.0;
+  //   end.orientation.z = 0.0;
+  //   end.orientation.w = 1.0;
+
+  //   start.position.x = nearest_vertex->state[0];
+  //   start.position.y = nearest_vertex->state[1];
+  //   start.position.z = nearest_vertex->state[2];
+  //   start.orientation.x = 0.0;
+  //   start.orientation.y = 0.0;
+  //   start.orientation.z = 0.0;
+  //   start.orientation.w = 1.0;
+
+  //   path_status = search(start, end, false, path_ret);
+
+  //   if (path_status) break;
+  // }
+
+  // if (!path_status) {
+  //   ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: Cannot connect to nearest node");
+  //   return;
+  // } else {
+  //   std::vector<Vertex*> semantic_path;
+  //   ROS_INFO_COND(global_verbosity >= Verbosity::INFO, 
+  //       "[SEMANTICS]: Found a path to the semantic point with %d vertices.",
+  //       (int)path_ret.size());
+  //   if (path_ret.size() > 2) {
+  //     for (int i = 1; i < path_ret.size(); ++i) {
+  //       StateVec next_state(path_ret[i].position.x, path_ret[i].position.y,
+  //                           path_ret[i].position.z, 0.0);
+  //       Vertex* vert = new Vertex(i, next_state);
+  //       if (i == path_ret.size() - 1) {
+  //         vert->semantic_class.value = semantic.type.value;
+  //         vert->type = VertexType::kFrontier;
+  //         vert->is_leaf_vertex = true;
+  //       } else {
+  //         vert->semantic_class.value =
+  //             planner_semantic_msgs::SemanticClass::kNone;
+  //       }
+  //       semantic_path.push_back(vert);
+  //     }
+  //   } else {
+  //     StateVec next_state(path_ret[1].position.x, path_ret[1].position.y,
+  //                         path_ret[1].position.z, 0.0);
+  //     Vertex* vert = new Vertex(global_graph_->generateVertexID(), next_state);
+  //     vert->semantic_class.value = semantic.type.value;
+  //     vert->type = VertexType::kFrontier;
+  //     vert->is_leaf_vertex = true;
+  //     global_graph_->addVertex(vert);
+  //     Eigen::Vector3d tgt_pos(vert->state[0], vert->state[1], vert->state[2]);
+  //     Eigen::Vector3d src_pos(nearest_vertex->state[0],
+  //                             nearest_vertex->state[1],
+  //                             nearest_vertex->state[2]);
+  //     global_graph_->addEdge(nearest_vertex, vert, (tgt_pos - src_pos).norm());
+  //   }
+  // }
+  // visualization_->visualizeGlobalGraph(global_graph_);
 }
 
 void Rrg::expandGraph(std::shared_ptr<GraphManager> graph_manager,
@@ -1062,6 +1738,7 @@ Rrg::GraphStatus Rrg::buildGraph() {
 
   if (planning_params_.type == PlanningModeType::kAdaptiveExploration) {
     // 1. Construct the box
+    // ROS_INFO("I'M IN ADAPTIVE");
     Eigen::Vector3d min_val, max_val, rotations, mean_val, std_val;
     Eigen::Vector3d pos = root_vertex_->state.head(3);
     // adaptive obb will extend this bounding box
@@ -1162,6 +1839,7 @@ Rrg::GraphStatus Rrg::buildGraph() {
              stat_->num_vertices_fail, stat_->num_edges_fail);
     return Rrg::GraphStatus::ERR_NO_FEASIBLE_PATH;
   }
+
 }
 
 Rrg::GraphStatus Rrg::buildGridGraph(StateVec state, Eigen::Vector3d robot_size,
@@ -1424,6 +2102,7 @@ void Rrg::correctYaw() {
 }
 
 Rrg::GraphStatus Rrg::evaluateGraph() {
+  // ROS_INFO("I'm in evaluateGraph");
   Rrg::GraphStatus gstatus = Rrg::GraphStatus::OK;
 
   START_TIMER(ttime);
@@ -1454,6 +2133,10 @@ Rrg::GraphStatus Rrg::evaluateGraph() {
   bool frontier_exists = false;
   std::vector<int> negative_edge_leafs;
   std::vector<Eigen::Vector3d> inadmissible_negative_edges;
+
+  const double VERTEX_GAIN_THRESHOLD = 6000.0;  // Gain threshold for each frontier vertex
+  bool any_high_gain_vertex = false;  // To track if any frontier vertex has a gain above the threshold
+
   for (int i = 0; i < num_leaf_vertices; ++i) {
     int id = leaf_vertices[i]->id;
     std::vector<Vertex*> path;
@@ -1497,8 +2180,16 @@ Rrg::GraphStatus Rrg::evaluateGraph() {
           path_gain += vol_gain * exp(-lambda * path_length);
           v_id->vol_gain.accumulative_gain = path_gain;
           num_unknown_voxels += v_id->vol_gain.num_unknown_voxels;
-          if (v_id->vol_gain.is_frontier && !v_id->is_hanging)
+          if (v_id->vol_gain.is_frontier && !v_id->is_hanging) {
+            double vol_gain = v_id->vol_gain.gain;
+            if (vol_gain > VERTEX_GAIN_THRESHOLD) {
+                any_high_gain_vertex = true;  // At least one high gain vertex exists
+            } else {
+                // ROS_INFO_STREAM("Frontier vertex gain too low for vertex ID: " << v_id->id << ", Gain: " << vol_gain);
+            }
+
             frontier_exists = true;
+        }
         }
       }
       if (inadmissible_edge) {
@@ -1521,15 +2212,18 @@ Rrg::GraphStatus Rrg::evaluateGraph() {
     }
   }
 
+
   if (planning_params_.auto_global_planner_enable) {
-    if (!frontier_exists) {
+    if (!frontier_exists || !any_high_gain_vertex) {
+      ROS_INFO("Local graph is done activate the global graph");
       ++num_low_gain_iters_;
       ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "No frontier found in this round. Total rounds: %d",
                num_low_gain_iters_);
     } else {
       if (num_low_gain_iters_ > 0) --num_low_gain_iters_;
     }
-    if (num_low_gain_iters_ >= 4) {
+    if (num_low_gain_iters_ >= 3) {
+      publishGraph();
       ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "%d consecutinve low gain paths, triggering global planner.",
                num_low_gain_iters_);
       num_low_gain_iters_ = 0;
@@ -1537,6 +2231,56 @@ Rrg::GraphStatus Rrg::evaluateGraph() {
       return Rrg::GraphStatus::NOT_OK;
     }
   }
+
+//____________________________________________________________________________________________________________________________________
+  
+  
+  std::vector<std::pair<Vertex*, double>> leaf_vertices_with_gains;
+    for (Vertex* leaf : leaf_vertices) {
+        leaf_vertices_with_gains.push_back(std::make_pair(leaf, leaf->vol_gain.gain));
+    }
+
+    std::string robot_namespace = nh_.getNamespace();
+    if (!robot_namespace.empty() && robot_namespace.front() == '/') {
+        robot_namespace.erase(0, 1); // Remove the first character if it is a slash
+    }
+
+    planner_msgs::FrontierRequest srv;
+    srv.request.robot_id = robot_namespace;
+    for (const auto& vertex_gain : leaf_vertices_with_gains) {
+    if (vertex_gain.first->vol_gain.is_frontier) {
+        geometry_msgs::Pose pose;
+        pose.position.x = vertex_gain.first->state.x();
+        pose.position.y = vertex_gain.first->state.y();
+        pose.position.z = vertex_gain.first->state.z();
+        pose.orientation.w = 1.0;  // Default orientation
+
+        srv.request.frontiers.poses.push_back(pose);
+        srv.request.gains.push_back(vertex_gain.second);
+        srv.request.ids.push_back(vertex_gain.first->id);  // Add the ID of the vertex
+    }
+}
+
+    if (!ros::service::waitForService("assign_frontier", ros::Duration(10))) {
+        ROS_ERROR("Service not available after waiting");
+    }
+
+    // Call the service
+    if (frontier_request_client_.call(srv)) {
+        if (srv.response.success) {
+              auto id = srv.response.assigned_frontier_id;
+              best_path_id = id;
+        } else {
+            ROS_INFO("Failed to assign a valid frontier");
+        }
+    } else {
+        ROS_INFO("Failed to call frontier request service");
+    }
+
+
+
+
+//______________________________________________________________________________________________________________________________________________
 
   // Visualization at the end.
   visualization_->visualizeShortestPaths(local_graph_, local_graph_rep_);
@@ -1810,6 +2554,271 @@ bool Rrg::modifyPath(pcl::PointCloud<pcl::PointXYZ>* obstacle_pcl,
                                        tangent_point_list);
   return true;
 }
+std::mutex graph_mutex;
+
+bool Rrg::validateGraph() {
+    
+    // ROS_INFO("In validateGraph");
+
+    if (!local_graph_) {
+        ROS_INFO("Graph object is null.");
+        return false;
+    }
+
+    int numVertices = local_graph_->getNumVertices();
+    int numEdges = local_graph_->getNumEdges();
+    // ROS_INFO("Graph has %d vertices and %d edges.", numVertices, numEdges);
+
+    // Check if the graph is unexpectedly empty
+    if (numVertices == 0) {
+        ROS_INFO("Graph has no vertices.");
+        return false;
+    }
+
+    // Optionally, check for a minimum number of edges or other logical consistencies
+    if (numEdges == 0) {
+        ROS_INFO("Graph has no edges, which might be unexpected depending on the application.");
+        return false;
+    }
+
+    // Additional logic might check for relationships between vertices and edges
+    // For example, in a fully connected graph, numEdges should be at least (numVertices - 1)
+    if (numEdges < numVertices - 1) {
+        ROS_INFO("Graph might not be fully connected.");
+        return false;
+    }
+
+    return true;
+}
+
+
+
+// void Rrg::filterGraphForSharing(GraphManager* source_graph, GraphManager* filtered_graph) {
+//     filtered_graph->reset();
+
+//     // Identify frontier vertices at leaf nodes
+//     std::vector<Vertex*> leaf_vertices;
+//     source_graph->getLeafVertices(leaf_vertices);
+//     std::vector<Vertex*> frontier_vertices;
+//     for (auto& v : leaf_vertices) {
+//         if (v->type == VertexType::kFrontier) {
+//             frontier_vertices.push_back(v);
+//         }
+//     }
+
+//     // Create a set to keep track of vertices to include
+//     std::unordered_set<int> vertices_to_include;
+
+//     // For each frontier vertex, get the shortest path to it and add to the set
+//     for (auto& frontier : frontier_vertices) {
+//         std::vector<Vertex*> path;
+//         source_graph->getShortestPath(frontier->id, local_graph_rep_, true, path);
+//         for (auto& vertex : path) {
+//             vertices_to_include.insert(vertex->id);
+//         }
+//     }
+
+//     // Add vertices to the filtered graph
+//     for (int vertex_id : vertices_to_include) {
+//         Vertex* vertex = source_graph->getVertex(vertex_id);
+//         filtered_graph->addVertex(new Vertex(*vertex));
+//     }
+
+//     // Add edges to the filtered graph
+//     for (auto& frontier : frontier_vertices) {
+//         std::vector<Vertex*> path;
+//         source_graph->getShortestPath(frontier->id, local_graph_rep_, true, path);
+//         for (size_t i = 1; i < path.size(); ++i) {
+//             Vertex* v1 = path[i - 1];
+//             Vertex* v2 = path[i];
+//             double weight = (v1->state.head(3) - v2->state.head(3)).norm();
+//             filtered_graph->addEdge(filtered_graph->getVertex(v1->id), filtered_graph->getVertex(v2->id), weight);
+//         }
+//     }
+// }
+
+void Rrg::filterGraphForSharing(GraphManager* source_graph, std::shared_ptr<GraphManager> filtered_graph) {
+    ROS_INFO("Filtering graph for sharing...");
+
+    // Reset the filtered graph
+    if (source_graph == nullptr) {
+        ROS_ERROR("Filtered graph is null. Exiting filterGraphForSharing.");
+        return;
+    }
+
+    ROS_INFO("Resetting filtered graph...");
+    if (filtered_graph != NULL) filtered_graph->reset();
+
+    ROS_INFO("Filtered graph reset.");
+
+     std::vector<Vertex*> leaf_vertices;
+    source_graph->getLeafVertices(leaf_vertices);
+    std::vector<Vertex*> frontier_vertices;
+    for (auto& v : leaf_vertices) {
+        if (v->type == VertexType::kFrontier) {
+            frontier_vertices.push_back(v);
+        }
+    }
+
+    ROS_INFO("Found %lu leaf vertices, %lu of them are frontiers.", leaf_vertices.size(), frontier_vertices.size());
+
+    std::unordered_set<int> vertices_to_include;
+    std::unordered_set<std::pair<int, int>, boost::hash<std::pair<int, int>>> edges_to_include;
+
+    for (auto& frontier : frontier_vertices) {
+        std::vector<Vertex*> path;
+        source_graph->getShortestPath(frontier->id, local_graph_rep_, true, path);
+        ROS_INFO("Path to frontier %d has %lu vertices.", frontier->id, path.size());
+        for (size_t i = 0; i < path.size(); ++i) {
+            vertices_to_include.insert(path[i]->id);
+            if (i > 0) {
+                edges_to_include.insert({path[i - 1]->id, path[i]->id});
+                edges_to_include.insert({path[i]->id, path[i - 1]->id});
+            }
+        }
+    }
+
+    ROS_INFO("Number of vertices to include: %lu", vertices_to_include.size());
+    ROS_INFO("Number of edges to include: %lu", edges_to_include.size());
+
+    // Add vertices to the filtered graph
+    for (int vertex_id : vertices_to_include) {
+        ROS_INFO("In Add vertices to the filtered graph, vertex_id: %d", vertex_id);
+        Vertex* vertex = source_graph->getVertex(vertex_id);
+        if (vertex) {
+            // ROS_INFO("Vertex %d: state = [%f, %f, %f, %f], vol_gain = [%d, %d, %d], is_frontier = %d",
+            //          vertex->id, vertex->state[0], vertex->state[1], vertex->state[2], vertex->state[3],
+            //          vertex->vol_gain.num_unknown_voxels, vertex->vol_gain.num_occupied_voxels, vertex->vol_gain.num_free_voxels,
+            //          vertex->vol_gain.is_frontier);
+            Vertex* new_vertex = new Vertex(vertex->id, vertex->state);
+            new_vertex->vol_gain = vertex->vol_gain;
+            new_vertex->type = vertex->type;
+            filtered_graph->addVertex(new_vertex);
+            // ROS_INFO("Added vertex %d to filtered graph.", vertex_id);
+        } else {
+            ROS_ERROR("Vertex %d is null in source graph, cannot add to filtered graph.", vertex_id);
+        }
+    }
+
+    // Add edges to the filtered graph
+    for (const auto& edge : edges_to_include) {
+        Vertex* v1 = filtered_graph->getVertex(edge.first);
+        Vertex* v2 = filtered_graph->getVertex(edge.second);
+        if (v1 && v2) {
+            double weight = (v1->state.head(3) - v2->state.head(3)).norm();
+            filtered_graph->addEdge(v1, v2, weight);
+            // ROS_INFO("Added edge from %d to %d with weight %f", edge.first, edge.second, weight);
+        } else {
+            ROS_ERROR("One of the vertices for edge %d -> %d is null.", edge.first, edge.second);
+        }
+    }
+
+    ROS_INFO("Filtered graph now has %d vertices and %d edges.", filtered_graph->getNumVertices(), filtered_graph->getNumEdges());
+}
+void Rrg::publishGraph() {
+    if (local_graph_ && validateGraph()) {
+        Vertex* first_vertex = local_graph_->getVertex(0);
+        if (first_vertex) {
+            first_vertex->type = VertexType::kVisited;
+        } else {
+            ROS_WARN("First vertex is null, cannot set type.");
+        }
+
+        // Create or reset the filtered graph
+        if (!filtered_graph) {
+            filtered_graph = std::make_shared<GraphManager>();
+        }
+
+        ROS_INFO("Starting graph filtering...");
+        filterGraphForSharing(local_graph_.get(), filtered_graph);
+
+        if (filtered_graph && validateGraph()) {
+          planner_msgs::Graph graph_msg;
+          filtered_graph->convertGraphToMsg(graph_msg);
+          local_graph_pub_.publish(graph_msg);
+
+          ROS_INFO("Published filtered graph with %d vertices and %d edges.", 
+                  filtered_graph->getNumVertices(), filtered_graph->getNumEdges());}
+    } else {
+        ROS_INFO("Graph validation failed, not publishing.");
+    }
+}
+
+// void Rrg::publishGraph() {
+//     // ROS_INFO("In publishGraph");
+//     if (local_graph_ && validateGraph()) {
+//         Vertex* first_vertex = local_graph_->getVertex(0);  // Get the first vertex
+//         if (first_vertex) {  // Make sure the first vertex is not null
+//             first_vertex->type = VertexType::kVisited; // Set the type to kVisited (2)
+//             int type_value = static_cast<int>(first_vertex->type);  // Convert enum to int if needed
+//             // ROS_INFO_STREAM("Type of the first vertex in the local graph set to: " << type_value);
+//         } else {
+//             ROS_WARN("First vertex is null, cannot set type.");
+//         }
+
+//         planner_msgs::Graph graph_msg;
+//         local_graph_->convertGraphToMsg(graph_msg);
+//         // ROS_INFO("attempt to publish the local graph");
+//         local_graph_pub_.publish(graph_msg);
+//         // ROS_INFO("published successfully");
+//     } else {
+//         ROS_INFO("Graph validation failed, not publishing.");
+//     }
+// }
+
+
+void Rrg::otherRobotGraphCallback(const planner_msgs::Graph& graph_msg) {
+    std::lock_guard<std::mutex> lock(global_graph_mutex);
+    // ROS_INFO("I'm in otherRobotGraphCallback ");
+    
+    if (graph_msg.vertices.empty()) {
+        ROS_INFO("Received empty graph message, skipping integration.");
+        return; // Skip processing if no vertices are present
+    }
+    
+    
+    // int frontier_count = 0;
+
+    // Find the maximum vertex ID in the current global graph
+    int max_id = 0;
+    for (int i = 0; i < global_graph_->getNumVertices(); ++i) {
+        Vertex* vertex = global_graph_->getVertex(i);
+        // if (global_graph_->getVertex(i)->type == VertexType::kFrontier) {  // Adjust 'Type' here as per actual field name
+        //     frontier_count++;}
+        if (vertex && vertex->id > max_id) {
+            max_id = vertex->id;
+        }
+    }
+    // ROS_INFO_STREAM("Maximum vertex ID in global graph: " << max_id);
+    // ROS_INFO_STREAM(nh_.getNamespace() << ": before Receiving " << frontier_count << " originally");
+
+    // If the maximum vertex ID is 0, this might indicate the graph is not meaningfully populated
+    if (max_id == 0) {
+        // ROS_INFO("Global graph has a maximum vertex ID of 0, indicating it might be empty or trivial. Skipping integration.");
+        return;
+    }
+
+    // Remap vertex IDs in the incoming graph
+    planner_msgs::Graph remapped_graph = graph_msg;
+    for (auto& vertex : remapped_graph.vertices) {
+        vertex.id += (max_id + 1); // Increment by max_id + 1 to ensure uniqueness
+        // ROS_INFO_STREAM("Remapped incoming vertex ID from: " << vertex.id - (max_id + 1) << " to: " << vertex.id);
+    }
+
+    // Convert the remapped graph to the global graph
+    global_graph_->convertMsgToGraph(remapped_graph);
+
+    // int frontier_count_after_pushing_coming_graph = 0;
+
+    // for (int i = 0; i < global_graph_->getNumVertices(); ++i) {
+    //     // Vertex* vertex = global_graph_->getVertex(i);
+    //     if (global_graph_->getVertex(i)->type == VertexType::kFrontier) {  // Adjust 'Type' here as per actual field name
+    //         frontier_count_after_pushing_coming_graph++;}
+    // }
+    // ROS_INFO_STREAM(nh_.getNamespace() << ": Received " << frontier_count_after_pushing_coming_graph << " frontier vertices in the incoming graph.");
+
+}
+
 
 void Rrg::addFrontiers(int best_vertex_id) {
   // Add frontiers to the graph.
@@ -1822,6 +2831,9 @@ void Rrg::addFrontiers(int best_vertex_id) {
   // into desending list. 4) For each path, check if the frontier is surrounded
   // by normal vertices or any frontiers. If yes, don't add this path;
   // otherwise, add this path to the global graph.
+  // publishGraph();
+
+  // ROS_INFO("In addFrontiers");
 
   ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Global graph: %d vertices, %d edges.",
            global_graph_->getNumVertices(), global_graph_->getNumEdges());
@@ -1838,6 +2850,10 @@ void Rrg::addFrontiers(int best_vertex_id) {
              (int)global_frontiers.size());
     for (auto& v : global_frontiers) {
       computeVolumetricGainRayModelNoBound(v->state, v->vol_gain);
+      // ROS_INFO("%s: Global Frontiers:", nh_.getNamespace().c_str());
+      // ROS_INFO("State: [%.2f, %.2f, %.2f]",
+              //  v->state.x(), v->state.y(), v->state.z()); 
+
       if (!v->vol_gain.is_frontier) v->type = VertexType::kUnvisited;
     }
   }
@@ -1851,6 +2867,7 @@ void Rrg::addFrontiers(int best_vertex_id) {
       frontier_vertices.push_back(v);
     }
   }
+
   ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Get %d leaf vertices from newly local graph.",
            (int)leaf_vertices.size());
   ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Get %d frontiers from newly local graph.",
@@ -1946,14 +2963,27 @@ void Rrg::expandGlobalGraphTimerCallback(const ros::TimerEvent& event) {
 
   ros::Time time_lim;
   START_TIMER(time_lim);
+  std::lock_guard<std::mutex> lock(global_graph_mutex);
 
-  if (planner_trigger_count_ == 0) return;
+  // ROS_INFO("Starting expandGlobalGraphTimerCallback");
+  if (!global_graph_) {
+      // ROS_ERROR("Global graph is null, exiting callback");
+      return;
+  }
+  if (planner_trigger_count_ == 0) {
+      // ROS_INFO("No planner triggers, exiting callback");
+      return;
+  }
 
+  // ROS_INFO("Updating global frontiers");
   bool update_global_frontiers = false;
+
   if (update_global_frontiers) {
     std::vector<Vertex*> global_frontiers;
+
     int num_vertices = global_graph_->getNumVertices();
     for (int id = 0; id < num_vertices; ++id) {
+      
       if (global_graph_->getVertex(id)->type == VertexType::kFrontier) {
         global_frontiers.push_back(global_graph_->getVertex(id));
       }
@@ -2072,105 +3102,7 @@ void Rrg::expandGlobalGraphTimerCallback(const ros::TimerEvent& event) {
   time_elapsed = GET_ELAPSED_TIME(time_lim);
 }
 
-void Rrg::semanticsCallback(
-    const planner_semantic_msgs::SemanticPoint& semantic) {
-  std::cout << "Inside semantic callback" << std::endl;
-  StateVec* new_state =
-      new StateVec(semantic.point.x, semantic.point.y, semantic.point.z, 0.0);
-  Eigen::Vector3d sem((*new_state)[0], (*new_state)[1], (*new_state)[2]);
-
-  if (MapManager::VoxelStatus::kFree !=
-      map_manager_->getBoxStatus(sem + robot_params_.center_offset,
-                                 robot_box_size_, true)) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: Marker state not free.");
-    return;
-  }
-
-  Vertex* temp_nearest_vertex;
-  if (!global_graph_->getNearestVertex(new_state, &temp_nearest_vertex)) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertex found.");
-    return;
-  }
-  std::vector<Vertex*> nearest_vertices;
-  Vertex* nearest_vertex;
-  Eigen::Vector3d nv(temp_nearest_vertex->state[0],
-                     temp_nearest_vertex->state[1],
-                     temp_nearest_vertex->state[2]);
-
-  // Range of search = 2*closest node
-  if (!global_graph_->getNearestVertices(new_state, 2.0 * ((sem - nv).norm()),
-                                         &nearest_vertices)) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertex found.");
-    return;
-  }
-
-  std::vector<geometry_msgs::Pose> path_ret;
-  bool path_status = false;
-  const int kMaxNumTrials = 5;
-  for (int i = 0; (i < nearest_vertices.size()) && (i < kMaxNumTrials); ++i) {
-    nearest_vertex = nearest_vertices[i];
-    geometry_msgs::Pose start, end;
-    end.position.x = semantic.point.x;
-    end.position.y = semantic.point.y;
-    end.position.z = semantic.point.z;
-    end.orientation.x = 0.0;
-    end.orientation.y = 0.0;
-    end.orientation.z = 0.0;
-    end.orientation.w = 1.0;
-
-    start.position.x = nearest_vertex->state[0];
-    start.position.y = nearest_vertex->state[1];
-    start.position.z = nearest_vertex->state[2];
-    start.orientation.x = 0.0;
-    start.orientation.y = 0.0;
-    start.orientation.z = 0.0;
-    start.orientation.w = 1.0;
-
-    path_status = search(start, end, false, path_ret);
-
-    if (path_status) break;
-  }
-
-  if (!path_status) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: Cannot connect to nearest node");
-    return;
-  } else {
-    std::vector<Vertex*> semantic_path;
-    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, 
-        "[SEMANTICS]: Found a path to the semantic point with %d vertices.",
-        (int)path_ret.size());
-    if (path_ret.size() > 2) {
-      for (int i = 1; i < path_ret.size(); ++i) {
-        StateVec next_state(path_ret[i].position.x, path_ret[i].position.y,
-                            path_ret[i].position.z, 0.0);
-        Vertex* vert = new Vertex(i, next_state);
-        if (i == path_ret.size() - 1) {
-          vert->semantic_class.value = semantic.type.value;
-          vert->type = VertexType::kFrontier;
-          vert->is_leaf_vertex = true;
-        } else {
-          vert->semantic_class.value =
-              planner_semantic_msgs::SemanticClass::kNone;
-        }
-        semantic_path.push_back(vert);
-      }
-    } else {
-      StateVec next_state(path_ret[1].position.x, path_ret[1].position.y,
-                          path_ret[1].position.z, 0.0);
-      Vertex* vert = new Vertex(global_graph_->generateVertexID(), next_state);
-      vert->semantic_class.value = semantic.type.value;
-      vert->type = VertexType::kFrontier;
-      vert->is_leaf_vertex = true;
-      global_graph_->addVertex(vert);
-      Eigen::Vector3d tgt_pos(vert->state[0], vert->state[1], vert->state[2]);
-      Eigen::Vector3d src_pos(nearest_vertex->state[0],
-                              nearest_vertex->state[1],
-                              nearest_vertex->state[2]);
-      global_graph_->addEdge(nearest_vertex, vert, (tgt_pos - src_pos).norm());
-    }
-  }
-  visualization_->visualizeGlobalGraph(global_graph_);
-}
+#include <iostream> // Make sure to include this for std::cout
 
 void Rrg::printShortestPath(int id) {
   std::vector<int> id_list;
@@ -2420,8 +3352,8 @@ ConnectStatus Rrg::findPathToConnect(
 
   ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "Finish searching.");
   status = ConnectStatus::kSuccess;
-  visualization_->visualizeBestPaths(graph_manager, graph_rep, 0,
-                                     final_target_id);
+  // visualization_->visualizeBestPaths(graph_manager, graph_rep, 0,
+  //                                    final_target_id);
   return status;
 }
 
@@ -3130,7 +4062,7 @@ void Rrg::setRootStateForPlanning(const geometry_msgs::Pose& root_pose) {
   state_for_planning_[0] = root_pose.position.x;
   state_for_planning_[1] = root_pose.position.y;
   state_for_planning_[2] = root_pose.position.z;
-  state_for_planning_[3] = tf::getYaw(root_pose.orientation);
+  // state_for_planning_[3] = tf::getYaw(root_pose.orientation);
   if ((state_for_planning_[0] == 0.0) && (state_for_planning_[1] == 0.0) &&
       (state_for_planning_[2] == 0.0)) {
     planning_params_.use_current_state = true;
@@ -3645,6 +4577,7 @@ bool Rrg::reconnectPathBlindly(std::vector<geometry_msgs::Pose>& ref_path,
 
 std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
                                                   int& status) {
+  // ROS_INFO("i'm in getBestPath");
   // Check if needs to land
   if (planning_params_.auto_landing_enable &&
       robot_params_.type == RobotType::kAerialRobot) {
@@ -4846,6 +5779,9 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
   // Check if exists any frontier in the global graph
   // Get the list of current frontiers.
   //
+
+  ROS_INFO("I'm in runGlobalPlanner");
+
   ROS_INFO_COND(global_verbosity >= Verbosity::PLANNER_STATUS, "Global planner triggered");
   if (vertex_id) {
     ros::Duration(3.0).sleep();  // sleep to unblock the thread to get and
@@ -5089,12 +6025,60 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
 
     // Rank from the best one.
     // Sort into descending order.
-    std::sort(feasible_global_frontiers.begin(),
-              feasible_global_frontiers.end(),
-              [&frontier_exp_gain](const Vertex* a, const Vertex* b) {
-                return frontier_exp_gain[a->id] > frontier_exp_gain[b->id];
-              });
-    // Print out
+    // std::sort(feasible_global_frontiers.begin(),
+    //           feasible_global_frontiers.end(),
+    //           [&frontier_exp_gain](const Vertex* a, const Vertex* b) {
+    //             return frontier_exp_gain[a->id] > frontier_exp_gain[b->id];
+    //           });
+
+    planner_msgs::FrontierRequest srv;
+    std::string robot_namespace = nh_.getNamespace();
+    if (!robot_namespace.empty() && robot_namespace.front() == '/') {
+        robot_namespace.erase(0, 1);  // Normalize the namespace by removing the leading '/'
+    }
+    srv.request.robot_id = robot_namespace;
+
+    // Populate the service request with all feasible frontiers
+    for (Vertex* vertex : feasible_global_frontiers) {
+        double gain = frontier_exp_gain[vertex->id];
+        geometry_msgs::Pose pose;
+        pose.position.x = vertex->state.x();
+        pose.position.y = vertex->state.y();
+        pose.position.z = vertex->state.z();
+        pose.orientation.w = 1.0;  // Assuming orientation is not critical, using a default
+
+        srv.request.frontiers.poses.push_back(pose);
+        srv.request.gains.push_back(gain);
+        srv.request.ids.push_back(vertex->id);
+    }
+
+    // Call the service to determine the best frontier
+    if (!ros::service::waitForService("assign_frontier", ros::Duration(10))) {
+        ROS_ERROR("Service not available after waiting");
+        return std::vector<geometry_msgs::Pose>(); // Return an empty vector if the service is not available
+    }
+    
+    if (frontier_request_client_.call(srv) && srv.response.success) {
+        int best_frontier_id = srv.response.assigned_frontier_id;
+        ROS_INFO("Assigned best frontier ID: %d", best_frontier_id);
+        // Now find the Vertex* that matches this ID for further processing
+        Vertex* best_frontier = nullptr;
+        for (Vertex* v : feasible_global_frontiers) {
+            if (v->id == best_frontier_id) {
+                best_frontier = v;
+                break;
+            }
+        }
+        if (best_frontier) {
+            current_global_vertex_id_ = best_frontier_id;
+            global_exploration_ongoing_ = true;
+            ROS_INFO("Proceeding with best frontier at position (%.2f, %.2f, %.2f)",
+                    best_frontier->state.x(), best_frontier->state.y(), best_frontier->state.z());
+        }
+    } else {
+        ROS_ERROR("Failed to assign a valid frontier or to call the frontier request service");
+    }
+    // // Print out
     // ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "List of potential frontier in decreasing order of gain:");
     // for (int i = 0; i < feasible_global_frontiers.size(); ++i) {
     //   ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "ID [%d]: %d with gain %f", i,

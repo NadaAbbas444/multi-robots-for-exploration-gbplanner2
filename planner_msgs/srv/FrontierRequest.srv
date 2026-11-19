@@ -1,0 +1,10 @@
+# Request part
+string robot_id
+geometry_msgs/PoseArray frontiers
+float64[] gains
+int32[] ids  # Array to store IDs of each frontier
+
+---
+# Response part
+int32 assigned_frontier_id  # ID of the assigned frontier
+bool success

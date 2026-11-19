@@ -14,6 +14,7 @@ add_message_files(
   SemanticClass.msg
   SemanticPoint.msg
   SemanticPolygon.msg
+  CenterAndRadius.msg
 )
 
 generate_messages(

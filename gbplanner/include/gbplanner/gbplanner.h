@@ -37,7 +37,11 @@ class Gbplanner {
             MapManagerVoxblox<MapManagerVoxbloxServer, MapManagerVoxbloxVoxel>*
                 map_manager);
 
-  void initializeAttributes();
+    void initializeAttributes(const std::string& ns);  // Updated to include namespace parameter
+
+  // Declare the service callback for toggling planning
+  bool togglePlanningCallback(std_srvs::SetBool::Request& req,
+                              std_srvs::SetBool::Response& res);
 
   bool plannerServiceCallback(planner_msgs::planner_srv::Request& req,
                               planner_msgs::planner_srv::Response& res);
@@ -56,6 +60,10 @@ class Gbplanner {
  private:
   ros::NodeHandle nh_;
   ros::NodeHandle nh_private_;
+
+  // Declare the planning_enabled_ variable
+  bool planning_enabled_;
+  ros::ServiceServer toggle_service_;
   ros::ServiceServer planner_service_;
   ros::ServiceServer global_planner_service_;
   ros::ServiceServer planner_homing_service_;

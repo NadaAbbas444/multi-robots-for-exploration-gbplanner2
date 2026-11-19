@@ -66,6 +66,8 @@ class RandomSampler {
   bool setDistributionParams(Eigen::Vector3d& mean_val,
                              Eigen::Vector3d& std_val);
 
+  void generateAround(const Eigen::Vector3d& center, double radius, StateVec& sample_state);
+
   void reset();
   void generate(StateVec& current_state, StateVec& sample_state);
 

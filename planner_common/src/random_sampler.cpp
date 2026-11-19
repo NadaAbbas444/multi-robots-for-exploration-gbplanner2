@@ -271,3 +271,10 @@ void RandomSampler::pushSample(StateVec& state, bool valid) {
       invalid_samples_.emplace_back(state);
   }
 }
+
+void RandomSampler::generateAround(const Eigen::Vector3d& center, double radius, StateVec& sample_state) {
+    // Assuming sample_state is a StateVec with at least 3 elements
+    sample_state[0] = center[0] + (static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5) * 2 * radius;
+    sample_state[1] = center[1] + (static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5) * 2 * radius;
+    sample_state[2] = center[2] + (static_cast<float>(rand()) / static_cast<float>(RAND_MAX) - 0.5) * 2 * radius;
+}

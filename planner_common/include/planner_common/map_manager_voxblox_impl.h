@@ -165,6 +165,8 @@ class MapManagerVoxblox : MapManager {
       SensorParamsBase& sensor_params);
 
   void augmentFreeFrustum();
+  
+    std::vector<Eigen::Vector3d> forHoleCoverage(const voxblox::Point& center_point, double radius) const;
 
   void getFreeSpacePointCloud(std::vector<Eigen::Vector3d>, StateVec,
                               pcl::PointCloud<pcl::PointXYZ>::Ptr);

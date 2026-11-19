@@ -12,39 +12,32 @@ PlannerControlInterface::PlannerControlInterface(
     ros::NodeHandle& nh, ros::NodeHandle& nh_private,
     std::shared_ptr<PCIManager> pci_manager)
     : nh_(nh), nh_private_(nh_private) {
-  reference_pub_ = nh_.advertise<visualization_msgs::Marker>("ref_pose", 5);
-  planner_status_pub_ = nh_.advertise<std_msgs::Bool>("gbplanner_status", 5);
-  stop_request_pub_ = nh_.advertise<std_msgs::Bool>(
-      "planner_control_interface/stop_request", 5);
+    std::string ns = nh_.getNamespace();  // Fetch the namespace
+    ns = (ns == "/") ? "" : ns + "/"; // Ensures it ends with a slash only if not the root
 
-  odometry_sub_ = nh_.subscribe(
-      "odometry", 1, &PlannerControlInterface::odometryCallback, this);
-  pose_sub_ =
-      nh_.subscribe("pose", 1, &PlannerControlInterface::poseCallback, this);
-  pose_stamped_sub_ = nh_.subscribe(
-      "pose_stamped", 1, &PlannerControlInterface::poseStampedCallback, this);
-  pci_server_ =
-      nh_.advertiseService("planner_control_interface_trigger",
-                           &PlannerControlInterface::triggerCallback, this);
-  pci_std_automatic_planning_server_ = nh_.advertiseService(
-      "planner_control_interface/std_srvs/automatic_planning",
+    // Initialize ROS publishers with namespace prepended
+    reference_pub_ = nh_.advertise<visualization_msgs::Marker>(ns + "/ref_pose", 5);
+    planner_status_pub_ = nh_.advertise<std_msgs::Bool>(ns + "/gbplanner_status", 5);
+    stop_request_pub_ = nh_.advertise<std_msgs::Bool>(ns + "/planner_control_interface/stop_request", 5);
+
+    // Initialize ROS subscribers with namespace
+    odometry_sub_ = nh_.subscribe(ns + "/odometry", 1, &PlannerControlInterface::odometryCallback, this);
+    pose_sub_ = nh_.subscribe(ns + "/pose", 1, &PlannerControlInterface::poseCallback, this);
+    pose_stamped_sub_ = nh_.subscribe(ns + "/pose_stamped", 1, &PlannerControlInterface::poseStampedCallback, this);
+  
+    pci_server_ = nh_.advertiseService(ns + "/planner_control_interface_trigger", &PlannerControlInterface::triggerCallback, this);
+    
+    pci_std_automatic_planning_server_ = nh_.advertiseService(ns + "planner_control_interface/std_srvs/automatic_planning",
       &PlannerControlInterface::stdSrvsAutomaticPlanningCallback, this);
-  pci_std_single_planning_server_ = nh_.advertiseService(
-      "planner_control_interface/std_srvs/single_planning",
+    
+    pci_std_single_planning_server_ = nh_.advertiseService(ns + "planner_control_interface/std_srvs/single_planning",
       &PlannerControlInterface::stdSrvsSinglePlanningCallback, this);
-  pci_homing_server_ = nh_.advertiseService(
-      "pci_homing_trigger", &PlannerControlInterface::homingCallback, this);
-  pci_std_homing_server_ = nh_.advertiseService(
-      "planner_control_interface/std_srvs/homing_trigger",
-      &PlannerControlInterface::stdSrvHomingCallback, this);
-  pci_std_go_to_waypoint_server_ = nh_.advertiseService(
-      "planner_control_interface/std_srvs/go_to_waypoint",
-      &PlannerControlInterface::stdSrvGoToWaypointCallback, this);
-  pci_initialization_server_ = nh_.advertiseService(
-      "pci_initialization_trigger",
-      &PlannerControlInterface::initializationCallback, this);
-  while (!(planner_client_ = nh.serviceClient<planner_msgs::planner_srv>(
-               "planner_server", true))) {  // true for persistent
+    pci_homing_server_ = nh_.advertiseService(ns + "pci_homing_trigger", &PlannerControlInterface::homingCallback, this);
+    pci_std_homing_server_ = nh_.advertiseService(ns + "planner_control_interface/std_srvs/homing_trigger",&PlannerControlInterface::stdSrvHomingCallback, this);
+    pci_std_go_to_waypoint_server_ = nh_.advertiseService(ns + "planner_control_interface/std_srvs/go_to_waypoint", &PlannerControlInterface::stdSrvGoToWaypointCallback, this);
+    pci_initialization_server_ = nh_.advertiseService(ns + "pci_initialization_trigger",&PlannerControlInterface::initializationCallback, this);
+  
+  while (!(planner_client_ = nh.serviceClient<planner_msgs::planner_srv>(ns + "/planner_server", true))) {  // true for persistent
     ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
                   "PCI: service planner_server is not available: waiting...");
     sleep(1);
@@ -52,8 +45,7 @@ PlannerControlInterface::PlannerControlInterface(
   ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
                 "PCI: connected to service planner_server.");
   while (
-      !(planner_homing_client_ = nh.serviceClient<planner_msgs::planner_homing>(
-            "planner_homing_server", true))) {  // true for persistent
+      !(planner_homing_client_ = nh.serviceClient<planner_msgs::planner_homing>(ns + "/planner_homing_server", true))) {  // true for persistent
     ROS_WARN_COND(
         global_verbosity >= Verbosity::WARN,
         "PCI: service planner_homing_server is not available: waiting...");
@@ -62,52 +54,31 @@ PlannerControlInterface::PlannerControlInterface(
   ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
                 "PCI: connected to service planner_homing_server.");
 
-  pci_set_homing_pos_server_ = nh_.advertiseService(
-      "pci_set_homing_pos", &PlannerControlInterface::setHomingPosCallback,
-      this);
-  pci_std_set_homing_pos_server_ = nh_.advertiseService(
-      "planner_control_interface/std_srvs/set_homing_position_here",
-      &PlannerControlInterface::stdSrvSetHomingPositionHereCallback, this);
-  planner_set_homing_pos_client_ =
-      nh.serviceClient<planner_msgs::planner_set_homing_pos>(
-          "gbplanner/set_homing_pos");
+  pci_set_homing_pos_server_ = nh_.advertiseService(ns + "pci_set_homing_pos", &PlannerControlInterface::setHomingPosCallback,this);
+  pci_std_set_homing_pos_server_ = nh_.advertiseService(ns + "planner_control_interface/std_srvs/set_homing_position_here",&PlannerControlInterface::stdSrvSetHomingPositionHereCallback, this);
+  planner_set_homing_pos_client_ = nh.serviceClient<planner_msgs::planner_set_homing_pos>("gbplanner/set_homing_pos");
 
-  planner_set_trigger_mode_client_ =
-      nh.serviceClient<planner_msgs::planner_set_planning_mode>(
-          "/gbplanner/set_planning_trigger_mode");
+  planner_set_trigger_mode_client_ = nh.serviceClient<planner_msgs::planner_set_planning_mode>("/gbplanner/set_planning_trigger_mode");
 
-  pci_search_server_ = nh_.advertiseService(
-      "pci_search", &PlannerControlInterface::searchCallback, this);
-  planner_search_client_ =
-      nh.serviceClient<planner_msgs::planner_search>("gbplanner/search");
+  pci_search_server_ = nh_.advertiseService(ns + "pci_search", &PlannerControlInterface::searchCallback, this);
+  planner_search_client_ = nh.serviceClient<planner_msgs::planner_search>("gbplanner/search");
 
-  pci_global_server_ = nh_.advertiseService(
-      "pci_global", &PlannerControlInterface::globalPlannerCallback, this);
-  planner_global_client_ =
-      nh.serviceClient<planner_msgs::planner_global>("gbplanner/global");
-  pci_stop_server_ = nh_.advertiseService(
-      "pci_stop", &PlannerControlInterface::stopPlannerCallback, this);
-  pci_std_stop_server_ = nh_.advertiseService(
-      "planner_control_interface/std_srvs/stop",
-      &PlannerControlInterface::stdSrvStopPlannerCallback, this);
+  pci_global_server_ = nh_.advertiseService(ns + "pci_global", &PlannerControlInterface::globalPlannerCallback, this);
+  planner_global_client_ = nh.serviceClient<planner_msgs::planner_global>("gbplanner/global");
+  pci_stop_server_ = nh_.advertiseService(ns + "pci_stop", &PlannerControlInterface::stopPlannerCallback, this);
+  pci_std_stop_server_ = nh_.advertiseService(ns + "planner_control_interface/std_srvs/stop",&PlannerControlInterface::stdSrvStopPlannerCallback, this);
 
-  planner_geofence_client_ =
-      nh.serviceClient<planner_msgs::planner_geofence>("gbplanner/geofence");
-  pci_geofence_server_ = nh_.advertiseService(
-      "pci_geofence", &PlannerControlInterface::addGeofenceCallback, this);
-  pci_to_waypoint_server_ = nh_.advertiseService(
-      "pci_to_waypoint", &PlannerControlInterface::goToWaypointCallback, this);
+  planner_geofence_client_ =nh.serviceClient<planner_msgs::planner_geofence>("gbplanner/geofence");
+  pci_geofence_server_ = nh_.advertiseService(ns + "pci_geofence", &PlannerControlInterface::addGeofenceCallback, this);
+  pci_to_waypoint_server_ = nh_.advertiseService(ns + "pci_to_waypoint", &PlannerControlInterface::goToWaypointCallback, this);
 
   planner_passing_gate_client_ =
       nh_.serviceClient<planner_msgs::planner_request_path>(
           "gbplanner/passing_gate");
-  pci_passing_gate_server_ =
-      nh_.advertiseService("planner_control_interface/std_srvs/pass_gate",
+  pci_passing_gate_server_ =nh_.advertiseService(ns + "planner_control_interface/std_srvs/pass_gate",
                            &PlannerControlInterface::passingGateCallback, this);
 
-  rotate_180_deg_server_ = nh_.advertiseService(
-      "pci_rotate_180_trigger", &PlannerControlInterface::rotate180DegCallback,
-      this);
+  rotate_180_deg_server_ = nh_.advertiseService(ns + "pci_rotate_180_trigger", &PlannerControlInterface::rotate180DegCallback,this);
 
   pci_std_global_last_specified_frontier_server_ = nh_.advertiseService(
       "planner_control_interface/std_srvs/replan_last_specified_frontier",

@@ -1,0 +1,5 @@
+# DistanceAndRole.srv
+geometry_msgs/Point point
+---
+float64 distance
+string role

@@ -294,6 +294,7 @@ void GraphManager::convertMsgToGraph(const planner_msgs::Graph& graph_msg) {
     vertex->vol_gain.is_frontier = v.is_frontier;
     if (v.is_frontier) vertex->type = VertexType::kFrontier;
     addVertex(vertex);
+
   }
 
   // Add all edges

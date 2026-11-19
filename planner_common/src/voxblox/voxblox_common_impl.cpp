@@ -632,3 +632,97 @@ MapManagerVoxblox<SDFServerType, SDFVoxelType>::eigenVec3dToPCLPoint(
   point.z = vec.z();
   return point;
 }
+
+#include "planner_common/map_manager_voxblox_impl.h"
+
+// PCL includes
+#include <pcl/point_cloud.h>
+#include <pcl/kdtree/kdtree.h>
+#include <pcl/segmentation/extract_clusters.h>
+
+template <typename SDFServerType, typename SDFVoxelType>
+std::vector<Eigen::Vector3d> MapManagerVoxblox<SDFServerType, SDFVoxelType>::forHoleCoverage(
+    const voxblox::Point& center_point, double radius) const {
+    std::vector<Eigen::Vector3d> cluster_centers;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+
+    if (!sdf_layer_) {
+        ROS_WARN("SDF layer not found.");
+        return cluster_centers;
+    }
+
+    // Define VoxelType enum and classifyVoxel function locally
+    enum LocalVoxelType { OCCUPIED, FREE, UNMAPPED };
+    auto classifyVoxel = [](const SDFVoxelType& voxel) -> LocalVoxelType {
+        if (voxel.distance < 0.0f && voxel.weight > 0.0f) {
+            return OCCUPIED;
+        } else if (voxel.distance > 0.0f && voxel.weight > 0.0f) {
+            return FREE;
+        } else {
+            return UNMAPPED;
+        }
+    };
+
+    double voxel_size = sdf_layer_->voxel_size();
+    double block_size = sdf_layer_->block_size();
+    double voxel_volume = voxel_size * voxel_size * voxel_size;
+
+    // Iterate over all allocated blocks
+    voxblox::BlockIndexList block_list;
+    sdf_layer_->getAllAllocatedBlocks(&block_list);
+
+    ROS_INFO_STREAM("Number of blocks: " << block_list.size());
+
+    for (const auto& block_index : block_list) {
+        typename voxblox::Block<SDFVoxelType>::ConstPtr block = sdf_layer_->getBlockPtrByIndex(block_index);
+        if (!block) {
+            continue;
+        }
+
+        voxblox::Point block_origin = block->origin();
+        if ((block_origin - center_point).cwiseAbs().maxCoeff() > radius + block_size) {
+            continue; // Skip blocks that are completely outside the radius
+        }
+
+        for (size_t i = 0; i < block->num_voxels(); ++i) {
+            const SDFVoxelType& voxel = block->getVoxelByLinearIndex(i);
+            Eigen::Vector3d voxel_center = block->computeCoordinatesFromLinearIndex(i).template cast<double>();
+
+            if ((voxel_center - center_point.template cast<double>()).norm() <= radius) {
+                LocalVoxelType voxel_type = classifyVoxel(voxel);
+                if (voxel_type == UNMAPPED) {
+                    cloud->push_back(pcl::PointXYZ(voxel_center.x(), voxel_center.y(), voxel_center.z()));
+                }
+            }
+        }
+    }
+
+    ROS_INFO_STREAM("Number of unmapped voxels: " << cloud->points.size());
+
+    // Perform clustering using EuclideanClusterExtraction
+    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
+    tree->setInputCloud(cloud);
+
+    std::vector<pcl::PointIndices> cluster_indices;
+    pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
+    ec.setClusterTolerance(0.5);  // Set the radius for clustering
+    ec.setMinClusterSize(1);
+    ec.setMaxClusterSize(cloud->points.size());
+    ec.setSearchMethod(tree);
+    ec.setInputCloud(cloud);
+    ec.extract(cluster_indices);
+
+    ROS_INFO_STREAM("Number of clusters found: " << cluster_indices.size());
+
+    for (const auto& indices : cluster_indices) {
+        Eigen::Vector3d cluster_center(0, 0, 0);
+        for (const auto& idx : indices.indices) {
+            cluster_center += Eigen::Vector3d(cloud->points[idx].x, cloud->points[idx].y, cloud->points[idx].z);
+        }
+        cluster_center /= indices.indices.size();
+        cluster_centers.push_back(cluster_center);
+        ROS_INFO_STREAM("Cluster center: " << cluster_center.transpose());
+    }
+
+    return cluster_centers;
+}

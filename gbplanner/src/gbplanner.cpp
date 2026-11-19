@@ -1,29 +1,34 @@
 #include "gbplanner/gbplanner.h"
 
 #include <nav_msgs/Path.h>
+#include <string>
 
 namespace explorer {
 
 Gbplanner::Gbplanner(const ros::NodeHandle& nh,
                      const ros::NodeHandle& nh_private)
-    : nh_(nh), nh_private_(nh_private) {
-  planner_status_ = Gbplanner::PlannerStatus::NOT_READY;
+    : nh_(nh), nh_private_(nh_private), planning_enabled_(true) {
+  std::string ns = ros::this_node::getNamespace();
+  ns = (ns == "/") ? "" : ns;
 
+  planner_status_ = Gbplanner::PlannerStatus::NOT_READY;
   rrg_ = new Rrg(nh, nh_private);
   if (!(rrg_->loadParams(false))) {
     ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "Could not load all required parameters. Shutdown ROS node.");
     ros::shutdown();
   }
 
-  initializeAttributes();
+  initializeAttributes(ns);
 }
 
 Gbplanner::Gbplanner(const ros::NodeHandle& nh,
                      const ros::NodeHandle& nh_private,
                      MapManagerVoxblox<MapManagerVoxbloxServer,
                                        MapManagerVoxbloxVoxel>* map_manager)
-    : nh_(nh), nh_private_(nh_private) {
-  
+    : nh_(nh), nh_private_(nh_private), planning_enabled_(true) {
+  std::string ns = ros::this_node::getNamespace();
+  ns = (ns == "/") ? "" : ns;
+
   planner_status_ = Gbplanner::PlannerStatus::NOT_READY;
   rrg_ = new Rrg(nh, nh_private, map_manager);
 
@@ -32,16 +37,21 @@ Gbplanner::Gbplanner(const ros::NodeHandle& nh,
     ros::shutdown();
   }
 
-  initializeAttributes();
+  initializeAttributes(ns);
 }
 
-void Gbplanner::initializeAttributes() {
-  planner_service_ = nh_.advertiseService(
-      "gbplanner", &Gbplanner::plannerServiceCallback, this);
-  global_planner_service_ = nh_.advertiseService(
-      "gbplanner/global", &Gbplanner::globalPlannerServiceCallback, this);
-  planner_homing_service_ = nh_.advertiseService(
-      "gbplanner/homing", &Gbplanner::homingServiceCallback, this);
+void Gbplanner::initializeAttributes(const std::string& ns) {
+    ROS_INFO("Namespace: %s", ns.c_str());
+
+  // Advertising services with namespace consideration
+  toggle_service_ = nh_.advertiseService(ns + "/gbplanner/toggle_planning",
+                                         &Gbplanner::togglePlanningCallback, this);
+  planner_service_ = nh_.advertiseService(ns + "/gbplanner",
+                                          &Gbplanner::plannerServiceCallback, this);
+  global_planner_service_ = nh_.advertiseService(ns + "/gbplanner/global",
+                                                 &Gbplanner::globalPlannerServiceCallback, this);
+  planner_homing_service_ = nh_.advertiseService(ns + "/gbplanner/homing",
+                                                 &Gbplanner::homingServiceCallback, this);
   planner_set_homing_pos_service_ =
       nh_.advertiseService("gbplanner/set_homing_pos",
                            &Gbplanner::setHomingPosServiceCallback, this);
@@ -73,16 +83,21 @@ void Gbplanner::initializeAttributes() {
       "gbplanner/set_planning_trigger_mode",
       &Gbplanner::plannerSetPlanningTriggerModeCallback, this);
 
-  pose_subscriber_ = nh_.subscribe("pose", 100, &Gbplanner::poseCallback, this);
-  pose_stamped_subscriber_ =
-      nh_.subscribe("pose_stamped", 100, &Gbplanner::poseStampedCallback, this);
-  odometry_subscriber_ =
-      nh_.subscribe("odometry", 100, &Gbplanner::odometryCallback, this);
-  robot_status_subcriber_ =
-      nh_.subscribe("/robot_status", 1, &Gbplanner::robotStatusCallback, this);
-  untraversable_polygon_subscriber_ =
-      nh_.subscribe("/traversability_estimation/untraversable_polygon", 100,
-                    &Gbplanner::untraversablePolygonCallback, this);
+  // Subscribing to topics with namespace consideration
+  pose_subscriber_ = nh_.subscribe(ns + "/pose", 100, &Gbplanner::poseCallback, this);
+  pose_stamped_subscriber_ = nh_.subscribe(ns + "/pose_stamped", 100, &Gbplanner::poseStampedCallback, this);
+  odometry_subscriber_ = nh_.subscribe(ns + "/odometry", 100, &Gbplanner::odometryCallback, this);
+  robot_status_subcriber_ = nh_.subscribe(ns + "/robot_status", 1, &Gbplanner::robotStatusCallback, this);
+  untraversable_polygon_subscriber_ = nh_.subscribe(ns + "/traversability_estimation/untraversable_polygon", 100,
+                                                    &Gbplanner::untraversablePolygonCallback, this);
+
+}
+
+bool Gbplanner::togglePlanningCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res) {
+    planning_enabled_ = req.data;
+    ROS_INFO("Planning %s", planning_enabled_ ? "enabled" : "disabled");
+    res.success = true;
+    return true;
 }
 
 bool Gbplanner::plannerGotoWaypointCallback(
@@ -169,9 +184,12 @@ bool Gbplanner::passingGateCallback(
   return true;
 }
 
-bool Gbplanner::plannerServiceCallback(
-    planner_msgs::planner_srv::Request& req,
-    planner_msgs::planner_srv::Response& res) {
+
+bool Gbplanner::plannerServiceCallback(planner_msgs::planner_srv::Request& req, planner_msgs::planner_srv::Response& res) {
+  if (!planning_enabled_) {
+      ROS_WARN("Planning is currently disabled.");
+      return false; // Or handle appropriately
+  }
   // Extract setting from the request.
   rrg_->setGlobalFrame(req.header.frame_id);
   rrg_->setBoundMode(static_cast<BoundModeType>(req.bound_mode));
@@ -320,6 +338,8 @@ void Gbplanner::setUntraversablePolygon(
 
 void Gbplanner::poseCallback(
     const geometry_msgs::PoseWithCovarianceStamped& pose) {
+        ROS_INFO("poseCallback");
+
   processPose(pose.pose.pose);
 }
 
@@ -346,6 +366,7 @@ void Gbplanner::odometryCallback(const nav_msgs::Odometry& odo) {
 }
 
 void Gbplanner::robotStatusCallback(const planner_msgs::RobotStatus& status) {
+  ROS_INFO("robotStatusCallback");
   rrg_->setTimeRemaining(status.time_remaining);
 }
 

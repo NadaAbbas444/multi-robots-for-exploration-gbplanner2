@@ -7,6 +7,7 @@
 #include <list>
 #include <numeric>
 #include <unordered_map>
+#include <geometry_msgs/PoseArray.h>
 
 #include <eigen3/Eigen/Dense>
 #include <geometry_msgs/PointStamped.h>
@@ -42,10 +43,18 @@
 #include "planner_common/random_sampler.h"
 #include "planner_common/trajectory.h"
 #include "planner_msgs/PlanningBound.h"
+#include "planner_msgs/FrontierRequest.h"
 #include "planner_msgs/PlanningMode.h"
 #include "planner_msgs/planner_dynamic_global_bound.h"
 #include "planner_msgs/planner_srv.h"
 #include "planner_semantic_msgs/SemanticPoint.h"
+#include <planner_msgs/GetFrontierGains.h>
+
+#include <vector>
+#include <limits>
+#include <cmath>
+#include <numeric> // For std::iota
+
 
 // Publish all gbplanner rviz topics or not.
 #define FULL_PLANNER_VIZ 1
@@ -70,6 +79,7 @@ class RobotStateHistory {
  private:
   // Kd-tree for nearest neigbor lookup.
   kdtree* kd_tree_;
+  
 };
 
 class Rrg {
@@ -93,7 +103,11 @@ class Rrg {
 
   // Clear out old vertices from previous session.
   void clear();
+// double computeGainDirectly(const StateVec& state);
 
+
+    bool sampleVertexAround(const Eigen::Vector3d& center, RandomSampler& random_sampler, Vertex& vertex, double radius);
+    bool validateSample(Vertex* vertex);
   // Sample points and construct a graph.
   GraphStatus buildGraph();
   GraphStatus buildGridGraph(StateVec state, Eigen::Vector3d robot_size,
@@ -116,7 +130,6 @@ class Rrg {
   void expandGraphEdgesBlindly(std::shared_ptr<GraphManager> graph_manager,
                                Vertex* new_vertex, double radius,
                                ExpandGraphReport& rep);
-
   // Compute exploration gain for each vertex.
   void computeExplorationGain(bool only_leaf_vertices = false);
   void computeExplorationGain(bool only_leaf_vertices = false,
@@ -149,7 +162,7 @@ class Rrg {
   std::vector<geometry_msgs::Pose> reRunGlobalPlanner();
   // Remove edges violating geofences
   void cleanViolatedEdgesInGraph(std::shared_ptr<GraphManager> graph_manager);
-
+    
   // Some utilities
   void addGeofenceAreas(const geometry_msgs::PolygonStamped& polygon_msgs);
   void clearUntraversableZones();
@@ -159,7 +172,15 @@ class Rrg {
   void setGlobalFrame(std::string frame_id);
   bool loadParams(bool);
   void initializeParams();
-  void initializeAttributes();
+
+// In rrg.h
+// Incorrect snippet
+// Corrected snippet
+void initializeAttributes(const std::string& ns);
+void generateGraphFromVertex(Vertex* start_vertex);
+    void findHighGainPaths();  
+
+
   void resetMissionTimer() {
     if (!landing_engaged_) rostime_start_ = ros::Time::now();
   }
@@ -217,12 +238,50 @@ class Rrg {
     visualization_->visualizeGlobalGraph(global_graph_);
     return true;
   }
+  
 
   bool saveGraph(const std::string& path) {
     visualization_->visualizeGlobalGraph(global_graph_);
     global_graph_->saveGraph(path);
     return true;
   }
+    void reorderSemanticLocations() {
+        if (semantic_locations_.size() < 2) {
+            // Not enough points to reorder
+            return;
+        }
+
+        std::vector<bool> visited(semantic_locations_.size(), false);
+        std::vector<planner_semantic_msgs::SemanticPoint> orderedLocations;
+        orderedLocations.reserve(semantic_locations_.size());
+
+        int currentLocation = 0;  // Starting from the first location
+        visited[currentLocation] = true;
+        orderedLocations.push_back(semantic_locations_[currentLocation]);
+
+        for (size_t i = 1; i < semantic_locations_.size(); ++i) {
+            double nearestDistance = std::numeric_limits<double>::max();
+            int nearestLocation = -1;
+
+            for (size_t j = 0; j < semantic_locations_.size(); ++j) {
+                if (!visited[j]) {
+                    double distance = calculateDistance(semantic_locations_[currentLocation], semantic_locations_[j]);
+                    if (distance < nearestDistance) {
+                        nearestDistance = distance;
+                        nearestLocation = j;
+                    }
+                }
+            }
+
+            if (nearestLocation != -1) {
+                visited[nearestLocation] = true;
+                orderedLocations.push_back(semantic_locations_[nearestLocation]);
+                currentLocation = nearestLocation;
+            }
+        }
+
+        semantic_locations_ = std::move(orderedLocations);
+    }
 
   void setPlannerTriggerMode(PlannerTriggerModeType& trig_mode) {
     planner_trigger_mode_ = trig_mode;
@@ -234,6 +293,15 @@ class Rrg {
   }
 
  private:
+  std::vector<planner_semantic_msgs::SemanticPoint> semantic_locations_;
+  // Assuming SemanticPoint has x, y, z accessible directly or through a method
+  double calculateDistance(const planner_semantic_msgs::SemanticPoint& a, const planner_semantic_msgs::SemanticPoint& b) {
+    return std::sqrt(std::pow(a.point.x - b.point.x, 2) +
+                     std::pow(a.point.y - b.point.y, 2) +
+                     std::pow(a.point.z - b.point.z, 2));
+}
+
+
   bool sampleRandomState(StateVec& state);
   bool sampleVertex(Vertex& vertex);
   bool sampleVertex(RandomSampler& random_sampler, StateVec& root_state,
@@ -257,11 +325,23 @@ class Rrg {
 
   void computeVolumetricGainRayModelNoBound(StateVec& state,
                                             VolumetricGain& vgain);
+    // Callback for processing points. Adjusts positions of points and publishes a trajectory.
+  // void pointsCallback(const geometry_msgs::PoseArray::ConstPtr& msg);
+    void otherRobotGraphCallback(const planner_msgs::Graph& graph_msg);
+
+    std::mutex global_graph_mutex;  // Mutex for protecting access to global_graph_
+
+bool validateGraph();
+
+// std::vector<Vertex*> sampleHighGainPoints(const Eigen::Vector3d& center, double radius, int num_points, int required_free_points);
 
   void evaluateShortestPaths();
+    void publishGraph();  // Add this line
+  void filterGraphForSharing(GraphManager* source_graph, std::shared_ptr<GraphManager> filtered_graph);
 
   // Add frontiers from the local graph to the global graph
   void addFrontiers(int best_vertex_id);
+    void publishPath(const std::vector<geometry_msgs::Pose>& path, const ros::Publisher& trajectory_pub);
 
   void semanticsCallback(const planner_semantic_msgs::SemanticPoint& semantic);
 
@@ -269,9 +349,18 @@ class Rrg {
 
   ros::NodeHandle nh_;
   ros::NodeHandle nh_private_;
+    ros::Publisher done_inspection_;
+
+
+  ros::Publisher local_graph_pub_;
+    ros::ServiceClient frontier_request_client_;
+
+    ros::Subscriber other_graph_sub_; // Declare the subscriber
 
   tf::TransformListener* listener_;
-
+  // ros::Subscriber points_sub_;
+  ros::Publisher adjusted_points_pub_; 
+    ros::Publisher near_obstacle; 
   ros::Publisher free_cloud_pub_;
   ros::Publisher time_log_pub_;
   ros::Publisher pci_reset_pub_;
@@ -291,6 +380,8 @@ class Rrg {
   std::shared_ptr<GraphManager> global_graph_;
   ShortestPathsReport global_graph_rep_;  // shortest path to root vertex
   std::vector<std::vector<double>> edge_inclinations_;
+  std::shared_ptr<GraphManager> filtered_graph;  // New graph manager
+  std::shared_ptr<GraphManager> exploration_graph_;
 
   // Add a collision-free path to the graph.
   bool addRefPathToGraph(const std::shared_ptr<GraphManager> graph_manager,
@@ -310,6 +401,14 @@ class Rrg {
   double exploring_direction_;
   const double kTimerPeriod = 0.25;
   ros::Timer periodic_timer_;
+  
+  std::vector<Vertex*> highGainPoints;
+  size_t currentIndex = 0;
+  Eigen::Vector3d target_position_;
+  ros::Timer target_check_timer_;
+
+  void checkTargetReached(const ros::TimerEvent&);
+
   void timerCallback(const ros::TimerEvent& event);
 
   std::queue<StateVec> robot_state_queue_;
@@ -445,10 +544,16 @@ class Rrg {
   StateVec current_state_;
   StateVec state_for_planning_;
 
+    double target_yaw_; // For orientation comparisons
+    bool target_reached_ = false;
+    Eigen::Vector3d current_position_; // Current position updated by odometry callback
+    std::mutex position_mutex_;
+
   // Precompute params for planner.
   Eigen::Vector3d robot_box_size_;
   int planning_num_vertices_max_;
   int planning_num_edges_max_;
+    bool is_processing = false;
 
   // Planner timing statistices
   std::shared_ptr<SampleStatistic> stat_, stat_chrono_;

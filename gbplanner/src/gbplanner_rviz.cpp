@@ -1349,7 +1349,7 @@ void Visualization::visualizeShortestPaths(
 
     marker.text = text_display;
     marker.id = marker_id++;
-    marker_array.markers.push_back(marker);
+    // marker_array.markers.push_back(marker);
   }
 
   // Sort the leaf vertices.
