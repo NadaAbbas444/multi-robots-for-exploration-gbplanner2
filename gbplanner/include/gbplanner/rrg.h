@@ -365,6 +365,10 @@ bool validateGraph();
     Eigen::Vector3d center;
     std::string owner;
   };
+  void constructAdaptiveBoxSafe(const Eigen::Vector3d& pos,
+                                Eigen::Vector3d& min_val, Eigen::Vector3d& max_val,
+                                Eigen::Vector3d& rotations, Eigen::Vector3d& mean_val,
+                                Eigen::Vector3d& std_val);
   void addOwnNoGoZone(const Eigen::Vector3d& center);
   void peerNoGoZonesCallback(const geometry_msgs::PoseArray::ConstPtr& msg,
                              const std::string& peer_ns);
@@ -385,6 +389,7 @@ bool validateGraph();
   ros::Time insp_earliest_done_;
   ros::Timer insp_timer_;
   void inspectionTimerCallback(const ros::TimerEvent&);
+  void inspectionStep();
   bool publishInspectionPath(const std::vector<geometry_msgs::Pose>& path);
   std::vector<geometry_msgs::Pose> makeTourCollisionFree(
       const std::vector<geometry_msgs::Pose>& tour);

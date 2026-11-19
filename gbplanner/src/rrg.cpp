@@ -671,6 +671,28 @@ Eigen::Vector3d generateInBall(const Eigen::Vector3d& center, double radius) {
     return point;
 }
 
+// Adaptive OBB with a fallback: pcl::PCA throws when fewer than 3 map points
+// are near the query (sparse/unknown surroundings, e.g. around an object
+// before it is mapped). Uncaught, that aborted the whole planner node.
+void Rrg::constructAdaptiveBoxSafe(const Eigen::Vector3d& pos,
+                                   Eigen::Vector3d& min_val,
+                                   Eigen::Vector3d& max_val,
+                                   Eigen::Vector3d& rotations,
+                                   Eigen::Vector3d& mean_val,
+                                   Eigen::Vector3d& std_val) {
+  try {
+    adaptive_obb_->constructBoundingBox(pos, min_val, max_val, rotations,
+                                        mean_val, std_val);
+  } catch (const std::exception& e) {
+    ROS_WARN_THROTTLE(5.0, "[AdaptiveOBB] %s -> using the default box", e.what());
+    min_val = adaptive_orig_min_val_;
+    max_val = adaptive_orig_max_val_;
+    rotations.setZero();
+    mean_val.setZero();
+    std_val = (max_val - min_val) / 6.0;
+  }
+}
+
 void Rrg::generateGraphFromVertex(Vertex* start_vertex) {
     std::cout << "Inside generateGraphFromVertex" << std::endl;
     if (!start_vertex) {
@@ -820,7 +842,7 @@ Eigen::Vector3d min_val, max_val, rotations, mean_val, std_val;
 
 min_val = adaptive_orig_min_val_;
 max_val = adaptive_orig_max_val_;
-adaptive_obb_->constructBoundingBox(pos, min_val, max_val, rotations, mean_val, std_val);
+constructAdaptiveBoxSafe(pos, min_val, max_val, rotations, mean_val, std_val);
 
 // 2. Update bounding box
 local_adaptive_params_.setBound(min_val, max_val);
@@ -1245,6 +1267,16 @@ void Rrg::finishInspection(bool success) {
 }
 
 void Rrg::inspectionTimerCallback(const ros::TimerEvent&) {
+  // Never let one failed inspection take the planner node down.
+  try {
+    inspectionStep();
+  } catch (const std::exception& e) {
+    ROS_ERROR("[INSPECTION] aborted: %s", e.what());
+    finishInspection(false);
+  }
+}
+
+void Rrg::inspectionStep() {
   if (insp_state_ == InspectionState::kIdle) return;
   const bool reached =
       (current_state_.head(3) - insp_goal_).norm() < insp_reach_tol_ &&
@@ -1854,8 +1886,8 @@ Rrg::GraphStatus Rrg::buildGraph() {
     // adaptive obb will extend this bounding box
     min_val = adaptive_orig_min_val_;
     max_val = adaptive_orig_max_val_;
-    adaptive_obb_->constructBoundingBox(pos, min_val, max_val, rotations,
-                                        mean_val, std_val);
+    constructAdaptiveBoxSafe(pos, min_val, max_val, rotations, mean_val,
+                             std_val);
 
     // 2. Update bounding box
     local_adaptive_params_.setBound(min_val, max_val);
