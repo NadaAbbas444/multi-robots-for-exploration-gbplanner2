@@ -1,120 +1,154 @@
-# Graph-based Exploration Planner 2.0
-![swag](img/cerberus_subt_winners.png)
+# Graph-Based Decentralized Exploration and Semantic Inspection for Multi-Robot Systems
 
-## Tutorial:
-Please refer to the [wiki](https://github.com/ntnu-arl/gbplanner_ros/wiki) page for detailed instructions to install and run the demo simulations as well as documentation of the planner interface and parameters.
-More results and video explaination of our method can be found on our website: [Link](https://www.autonomousrobotslab.com/exploration-planning.html)
+Code for the ICUAS 2025 paper by **Nada E. Abbas** and **Tamara Petrović**
+(LARICS, University of Zagreb FER).
 
-## Installation
-These instructions assume that ROS desktop-full of the appropriate ROS distro is installed.
+A team of UAVs explores an unknown subterranean or large-scale environment,
+detects objects of interest, and inspects them, with no central controller:
 
-Install necessary libraries:
+- **Graph-based exploration**: a dense local RRG for immediate exploration and
+  a sparse global graph for repositioning, dead-end recovery and auto-homing,
+  inside an adaptive local bounding box (built on gbplanner).
+- **Peer-to-peer coordination with No-Go Zones**: each UAV shares the goals it
+  has selected as No-Go Zones. Peers may fly through them, but frontiers inside
+  them get zero gain and are never selected, which prevents redundant coverage.
+- **Semantic inspection**: Mask R-CNN detects objects (vehicles). The
+  inspection planner clusters unmapped holes of the object's surface in the
+  TSDF, samples a viewpoint graph around it, and orders the viewpoints with
+  the Lin-Kernighan-Helsgaun (LKH-3) TSP heuristic.
+- **Dynamic task allocation**: a sequential auction or fixed explorer/inspector
+  roles, for any number of UAVs; tasks detected later are allocated too.
 
-For Ubuntu 18.04 and ROS Melodic:
+Project page: https://nadaabbas444.github.io/multi-robots-for-exploration-gbplanner2/
+
+---
+
+## Quick start
+
+Everything runs in Docker (Ubuntu 20.04, ROS Noetic, Gazebo 11, ArduPilot SITL
+via the [LARICS UAV simulation stack](https://github.com/larics/uav_ros_simulation)).
+The host only needs Docker and an X server. About 20 GB of disk is needed.
+
 ```bash
-sudo apt install python-catkin-tools \
-libgoogle-glog-dev \
-ros-melodic-joy \
-ros-melodic-twist-mux \
-ros-melodic-interactive-marker-twist-server \
-ros-melodic-octomap-ros
+# 1. workspace + sources (dependencies are pinned, see workspace/deps.repos)
+mkdir -p ~/icuas2025_ws/src && cd ~/icuas2025_ws/src
+git clone https://github.com/NadaAbbas444/multi-robots-for-exploration-gbplanner2.git
+./multi-robots-for-exploration-gbplanner2/workspace/setup_workspace.sh
+
+# 2. container (the image is built on first use, which takes ~15 min)
+./multi-robots-for-exploration-gbplanner2/workspace/docker/run.sh
 ```
-For Ubuntu 20.04 and ROS Noetic:
+
+Inside the container:
+
 ```bash
-
-sudo apt install python3-catkin-tools \
-libgoogle-glog-dev \
-ros-noetic-joy \
-ros-noetic-twist-mux \
-ros-noetic-interactive-marker-twist-server \
-ros-noetic-octomap-ros
+build_ws                 # first time and after code changes (~10 min the first time)
+start_sim                # 2 UAVs in the DARPA cave, auction allocation
+start_exploration        # once both UAVs hover (~2 min): start autonomous exploration
+tmux attach -t icuas2025 # watch all processes (Ctrl-b d to detach)
+stop_sim
 ```
 
+`docker/run.sh` with no arguments opens a shell. Run it again in another host
+terminal to get a second shell in the same container.
 
-Create the workspace:
+## Scenarios
+
+`start_sim` and `run_test` are configured with environment variables:
+
+| Variable   | Values                          | Default   |
+|------------|---------------------------------|-----------|
+| `SCENARIO` | `cave` · `tunnel` · `mine`      | `cave`    |
+| `NUM_UAVS` | `2` (red, blue) · `3` (+yellow) | `2`       |
+| `STRATEGY` | `auction` · `role`              | `auction` |
+| `SEMANTIC` | `true` · `false` (Mask R-CNN)   | `true` in `tunnel`, else `false` |
+| `GUI`      | `true` · `false` (Gazebo + RViz)| `false`   |
+| `WORLD`    | path to any `.world`            | from `SCENARIO` |
+
 ```bash
-mkdir -p gbplanner2_ws/src/exploration
-cd gbplanner2_ws/src/exploration
+GUI=true start_sim                                  # watch exploration in Gazebo/RViz
+SCENARIO=tunnel start_sim                           # semantic inspection with auction allocation
+SCENARIO=tunnel STRATEGY=role start_sim             # same, role-based allocation
+NUM_UAVS=3 SCENARIO=tunnel start_sim                # three UAVs
 ```
-Clone the planner
+
+Worlds:
+
+- `cave`: DARPA SubT cave (`planner_gazebo_sim/worlds/larics/darpa_cave_01.world`).
+- `mine`: room-and-pillar mine (`.../larics/virginia_mine.world`).
+- `tunnel`: tunnel under construction, 110 m × 14 m × 9 m, with a bus, a
+  fire truck, two pickups and an SUV
+  (`planner_gazebo_sim/worlds/construction_tunnel.world`; ground-truth poses are
+  listed in its header). Regenerate it with `worlds/gen_construction_tunnel.py`.
+
+The `worlds/larics/` copies are the original gbplanner worlds with 1 kHz
+physics. ArduPilot SITL becomes unstable at the originals' 4–10 ms steps.
+
+### Headless test runs
+
 ```bash
-git clone git@github.com:ntnu-arl/gbplanner_ros.git -b gbplanner2
+run_test 10                       # 10 min, prints both UAVs' state every minute
+NUM_UAVS=3 SCENARIO=tunnel run_test 6
 ```
 
-Clone and update the required packages:
+Results (summary, planner log, rosbag) go to
+`workspace/sim/icuas2025_larics/results/<timestamp>/`.
+
+### Task allocation and inspection without the detector
+
 ```bash
-cd <path/to/gbplanner2_ws>
-wstool init
-wstool merge ./src/exploration/gbplanner_ros/packages_ssh.rosinstall
-wstool update
+inject_object 30 -3.5 1.5 red     # report an object at (x, y, z) as seen by red
 ```
 
-`Note: ./src/exploration/gbplanner_ros/packages_https.rosinstall can be used for https based urls.`
+After `exploration_time_budget` (default 500 s), the allocator auctions all
+known objects. The winner pauses exploration, flies to the object, inspects
+it along the LKH tour, reports `done_inspection` and resumes exploring.
 
-Build:
-```bash
-catkin config -DCMAKE_BUILD_TYPE=Release
-catkin build
-```
+## Configuration
 
-## Running Planner Demo 
-### Aerial Robot Demo
-Download the gazebo model from [here](https://drive.google.com/file/d/1Mx_JKNyx2MEwn56LM5KyP8Z3FM-4I6OS/view?usp=sharing) and extract in the `~/.gazebo/models` folder.
-```bash
-roslaunch gbplanner rmf_sim.launch
-```
-It will take few moments to load the world. A message saying the spawn_rmf_obelix process has died may pop up, but as long as the pointcloud map is visible in rviz and the UI controls work this message can be safely ignored.
+`gbplanner/config/larics/` contains the configuration used with the LARICS drone:
 
-### Ground Robot Demo
-the following command:
-```bash
-roslaunch gbplanner smb_sim.launch
-```
-In Ubuntu 18.04 with ROS Melodic, the gazebo node might crash when running the ground robot simulation. In this case set the `gpu` parameter to false [here](https://github.com/ntnu-arl/smb_simulator/blob/6ed9d738ffd045d666311a8ba266570f58dca438/smb_description/urdf/sensor_head.urdf.xacro#L20).
+- `gbplanner_config.yaml`: planner parameters (sensor model matches the
+  simulated 8-beam ±30° LiDAR).
+- `task_allocation.yaml`: strategy, roles, exploration budget `T_e`, merge
+  radius, inspection time, battery budget.
+- No-Go Zones, as private parameters of `gbplanner_node`:
+  `no_go_zones/{enable, radius, min_spacing, apply_own_zones}` and
+  `peer_namespaces`.
+- `use_central_frontier_assigner` (default `false`) re-enables the optional
+  central `/assign_frontier` node (`p2p`).
 
-## Results
+## Repository layout
 
-Robot's of Team Cerberus running GBPlanner and GBPlanner2  
-![gbplanner_robots](img/gbplanner_robots.png)
+| Path | Content |
+|------|---------|
+| `gbplanner/` | planner: local/global RRG, No-Go Zones (`rrg.cpp`), inspection state machine, LKH wrapper (`lkh_tsp.cpp`), task allocation (`Dynamic_Auction.cpp`), LARICS bridge nodes |
+| `gbplanner/launch/larics/` | `robot.launch` (one UAV), `icuas2025_two_uav.launch`, `icuas2025_three_uav.launch` |
+| `mask_rcnn_ros/` | Mask R-CNN detector (TF 2.4) and object localisation |
+| `planner_common/`, `planner_msgs/`, `planner_semantic_msgs/`, ... | gbplanner libraries and messages |
+| `planner_gazebo_sim/` | worlds and models |
+| `workspace/` | Docker images, simulation sessions, helper commands, pinned dependencies, patches |
 
-Autonomous exploration mission in the Prize Round of the DARPA Subterranean Challenge Final Event using four ANYmal C legged robots (Chimera, Cerberus, Camel, Caiman), all running GBPlanner2 independantly.
+## Citation
 
-![final_circuit_all_robots](img/cerberus_final_run_compiled_hd.png)
-
-## References
-
-### Explanation Video
-[![gbplanner_video](img/gbp2_vid.png)](https://www.youtube.com/watch?v=bTqFp1aODqU&list=PLu70ME0whad9Z4epZQ9VBYagKpyMyhZZ1&index=4)
-
-If you use this work in your research, please cite the following publications:
-
-**Graph-based subterranean exploration path planning using aerial and legged robots**
-```
-@article{dang2020graph,
-  title={Graph-based subterranean exploration path planning using aerial and legged robots},
-  author={Dang, Tung and Tranzatto, Marco and Khattak, Shehryar and Mascarich, Frank and Alexis, Kostas and Hutter, Marco},
-  journal={Journal of Field Robotics},
-  volume = {37},
-  number = {8},
-  pages = {1363-1388},  
-  year={2020},
-  note={Wiley Online Library}
+```bibtex
+@inproceedings{abbas2025graph,
+  title     = {Graph-Based Decentralized Exploration and Semantic Inspection for Multi-Robot Systems},
+  author    = {Abbas, Nada E. and Petrovi{\'c}, Tamara},
+  booktitle = {2025 International Conference on Unmanned Aircraft Systems (ICUAS)},
+  year      = {2025}
 }
 ```
-**Autonomous Teamed Exploration of Subterranean Environments using Legged and Aerial Robots**
-```
-@INPROCEEDINGS{9812401,
-  author={Kulkarni, Mihir and Dharmadhikari, Mihir and Tranzatto, Marco and Zimmermann, Samuel and Reijgwart, Victor and De Petris, Paolo and Nguyen, Huan and Khedekar, Nikhil and Papachristos, Christos and Ott, Lionel and Siegwart, Roland and Hutter, Marco and Alexis, Kostas},
-  booktitle={2022 International Conference on Robotics and Automation (ICRA)}, 
-  title={Autonomous Teamed Exploration of Subterranean Environments using Legged and Aerial Robots}, 
-  year={2022},
-  volume={},
-  number={},
-  pages={3306-3313},
-  doi={10.1109/ICRA46639.2022.9812401}}
-```
 
-You can contact us for any question:
-* [Tung Dang](mailto:tung.dang@nevada.unr.edu)
-* [Mihir Dharmadhikari](mailto:mihir.dharmadhikari@ntnu.no)
-* [Kostas Alexis](mailto:konstantinos.alexis@ntnu.no)
+## Acknowledgements and licenses
+
+- Built on [gbplanner_ros](https://github.com/ntnu-arl/gbplanner_ros)
+  (BSD-3-Clause, see `LICENSE` and `README_gbplanner.md`) and its dependencies
+  (voxblox, adaptive_obb_ros, pci_general, ...).
+- Simulation: [LARICS uav_ros_simulation](https://github.com/larics/uav_ros_simulation).
+- Detection: [mask_rcnn_ros](https://github.com/ethz-asl/mask_rcnn_ros) /
+  [Matterport Mask R-CNN](https://github.com/matterport/Mask_RCNN) (MIT).
+- TSP: [LKH-3](http://webhotel4.ruc.dk/~keld/research/LKH-3/) by K. Helsgaun
+  (research use only), built in the Docker image from a source mirror.
+- Vehicle and construction models: [osrf/gazebo_models](https://github.com/osrf/gazebo_models)
+  (CC-BY 3.0, see `planner_gazebo_sim/models/GAZEBO_MODELS_NOTICE.md`).

@@ -276,10 +276,11 @@ class DynamicTaskAllocator {
                r.name.c_str(), t.id, t.point.x, t.point.y, t.point.z);
       return;
     }
-    // Nothing to inspect. Explorers always explore; in auction mode every
-    // robot explores until the budget is spent and again once idle.
-    if (!r.exploring && (r.role != "inspector" || strategy_ == "auction"))
-      setExploration(r, true);
+    // Nothing to inspect. In auction mode every robot explores (until the
+    // budget is spent, and again once idle). In role mode explorers explore
+    // and idle inspectors hold position, waiting for tasks.
+    const bool want_explore = (strategy_ == "auction") || r.role != "inspector";
+    if (r.exploring != want_explore) setExploration(r, want_explore);
   }
 
   void setExploration(Robot& r, bool on) {

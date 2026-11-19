@@ -1,0 +1,34 @@
+<launch>
+  <arg name="sensor_name" default="primesense" />
+  <arg name="visualize" default="true" />
+  <arg name="inspector_1" default="red"/>
+  <arg name="inspector_2" default="blue"/>
+
+  <!-- Configuration for Robot 1 -->
+  <group ns="$(arg inspector_1)">
+    <node name="mask_rcnn" pkg="mask_rcnn_ros" type="mask_rcnn_node.py" output="log">
+      <param name="~namespace" value="$(arg inspector_1)"/>
+      <!-- <rosparam command="load" file="$(find mask_rcnn_ros)/cfg/$(arg sensor_name)_topics.yaml"/> -->
+      <param name="~visualization" value="$(arg visualize)" />
+    </node>
+
+    <node pkg="mask_rcnn_ros" type="object_location.py" name="semantic_depth_processor" output="screen">
+                  <param name="~namespace" value="$(arg inspector_1)"/>
+        </node>  
+  
+  </group>
+
+  <!-- Configuration for Robot 2 -->
+  <group ns="$(arg inspector_2)">
+    <node name="mask_rcnn" pkg="mask_rcnn_ros" type="mask_rcnn_node.py" output="log">
+      <param name="~namespace" value="$(arg inspector_2)"/>
+      <param name="~visualization" value="$(arg visualize)" />
+    </node>
+
+    <node pkg="mask_rcnn_ros" type="object_location.py" name="semantic_depth_processor" output="screen">
+                  <param name="~namespace" value="$(arg inspector_2)"/>
+        </node>
+    
+  </group>
+
+</launch>

@@ -1,0 +1,6 @@
+# Request
+geometry_msgs/Point32 point
+---
+# Response
+bool success
+string message

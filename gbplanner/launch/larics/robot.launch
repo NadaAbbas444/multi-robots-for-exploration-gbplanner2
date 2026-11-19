@@ -7,7 +7,7 @@
   <arg name="spawn_y" default="0.0"/>
   <arg name="local_yaw_deg" default="0.0"/>
   <arg name="semantic" default="false"/>    <!-- Mask R-CNN + object localisation -->
-  <arg name="config_dir" default="$(find gbplanner)/config/rmf_obelix"/>
+  <arg name="config_dir" default="$(find gbplanner)/config/larics"/>
 
   <group ns="$(arg ns)">
     <!-- LARICS LiDAR-X publishes in an un-namespaced "velodyne" frame that is
@@ -51,14 +51,11 @@
       <param name="yaw_deg" value="$(arg local_yaw_deg)"/>
     </node>
 
-    <group if="$(arg semantic)">
-      <node name="mask_rcnn" pkg="mask_rcnn_ros" type="mask_rcnn_node_modified.py" output="log">
-        <param name="~namespace" value="$(arg ns)"/>
-        <param name="~visualization" value="true"/>
-      </node>
-      <node pkg="mask_rcnn_ros" type="object_location_modified.py" name="semantic_depth_processor" output="screen">
-        <param name="~namespace" value="$(arg ns)"/>
-      </node>
-    </group>
+    <!-- Object localisation from this UAV's detections (the shared Mask R-CNN
+         detector runs once for all UAVs, see icuas2025_two_uav.launch). -->
+    <node if="$(arg semantic)" pkg="mask_rcnn_ros" type="object_location_modified.py"
+          name="semantic_depth_processor" output="screen">
+      <param name="~namespace" value="$(arg ns)"/>
+    </node>
   </group>
 </launch>

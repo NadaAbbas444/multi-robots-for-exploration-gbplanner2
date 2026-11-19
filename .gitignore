@@ -50,4 +50,12 @@ qtcreator-*
 # Catkin custom files
 CATKIN_IGNORE
 
+.vscode/# large / generated files kept out of git
+mask_rcnn_ros/bags/*.h5
+mask_rcnn_ros/bags/*.bag
+workspace/sim/icuas2025_larics/results/
+workspace/sim/icuas2025_larics/.tmuxinator.yml
+planner_gazebo_sim/maps_for_khawaja.zip
+__pycache__/
+*.pyc
 .vscode/

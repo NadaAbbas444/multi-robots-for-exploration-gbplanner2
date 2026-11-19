@@ -117,6 +117,9 @@ void Rrg::initializeAttributes(const std::string& ns) {
   nh_private_.param("no_go_zones/min_spacing", no_go_zone_min_spacing_, 1.5);
   nh_private_.param("no_go_zones/apply_own_zones", no_go_apply_own_zones_, false);
   nh_private_.param("use_central_frontier_assigner", use_central_frontier_assigner_, false);
+  nh_private_.param("inspection/reach_tolerance", insp_reach_tol_, 1.0);
+  nh_private_.param("inspection/timeout_margin", insp_timeout_margin_, 30.0);
+  insp_timer_ = nh_.createTimer(ros::Duration(0.5), &Rrg::inspectionTimerCallback, this);
   if (!nh_private_.getParam("peer_namespaces", peer_namespaces_) ||
       peer_namespaces_.empty()) {
     peer_namespaces_ = {(robot_ns_ == "/red") ? "/blue" : "/red"};
@@ -978,8 +981,9 @@ for (const auto& pose : pathPoses) {
 }
 
 // Publish the trajectory
-adjusted_points_pub_.publish(trajMsg);
-std::cout << "Trajectory published to " << adjusted_points_pub_.getTopic() << "\n";
+// The inspection state machine makes the tour collision-free and publishes it.
+last_inspection_tour_ = pathPoses;
+(void)trajMsg;
 
 // Visualization
 visualization_->visualizeRefPath(pathPoses);
@@ -1075,118 +1079,168 @@ bool Rrg::validateSample(Vertex* vertex) {
 
 void Rrg::semanticsCallback(
     const planner_semantic_msgs::SemanticPoint& semantic) {
-  if (is_processing) {
-            std::cout << "Callback is currently processing. New call ignored." << std::endl;
-            return; // Ignore this call
-        }
-  
-  is_processing = true;
+  // Non-blocking: the old version slept 50 s inside this callback (freezing
+  // odometry/map updates) and reported "done" after a fixed delay.
+  if (insp_state_ != InspectionState::kIdle) {
+    ROS_WARN("[INSPECTION] busy; ignoring new task at (%.1f, %.1f, %.1f)",
+             semantic.point.x, semantic.point.y, semantic.point.z);
+    return;
+  }
+  insp_target_ = Eigen::Vector3d(semantic.point.x, semantic.point.y,
+                                 semantic.point.z);
+  insp_type_ = semantic.type.value;
 
-  std::cout << "Inside semantic callback" << std::endl;
-  StateVec* new_state =
-      new StateVec(semantic.point.x, semantic.point.y, semantic.point.z, 0.0);
+  // Approach: a free global-graph vertex near the object (vertices are
+  // collision-checked when added), reached with a searched collision-free path.
+  StateVec obj(insp_target_.x(), insp_target_.y(), insp_target_.z(), 0.0);
+  Vertex* near = nullptr;
+  geometry_msgs::Pose src, dst;
+  src.position.x = current_state_[0];
+  src.position.y = current_state_[1];
+  src.position.z = current_state_[2];
+  src.orientation.w = 1.0;
+  if (global_graph_ && global_graph_->getNearestVertex(&obj, &near) && near) {
+    dst.position.x = near->state[0];
+    dst.position.y = near->state[1];
+    dst.position.z = near->state[2];
+  } else {
+    dst.position.x = obj[0];
+    dst.position.y = obj[1];
+    dst.position.z = obj[2];
+  }
+  dst.orientation.w = 1.0;
 
-
-  Vertex* new_vertex = new Vertex(0, *new_state); // Dereference new_state with '*new_state'
-
-  generateGraphFromVertex(new_vertex);
-  ros::Duration(50).sleep();    
-
-  std_msgs::Bool msg;
-  msg.data = true;  // Set to true or false based on your logic
-  std::cout << "I will publish done inspection" << std::endl;
-
-  done_inspection_.publish(msg);
-
-  is_processing = false; // Reset the flag after processing is complete
-
-  // Vertex* temp_nearest_vertex;
-  // if (!global_graph_->getNearestVertex(new_state, &temp_nearest_vertex)) {
-  //   std::cout << "[SEMANTICS]: No nearest vertex found."<< std::endl;
-  //   ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertex found.");
-  //   return;
-  // }
-
-  // std::vector<Vertex*> nearest_vertices;
-  // Vertex* nearest_vertex;
-  // Eigen::Vector3d nv(temp_nearest_vertex->state[0],
-  //                    temp_nearest_vertex->state[1],
-  //                    temp_nearest_vertex->state[2]);
-
-  // // Range of search = 2*closest node
-  // // if (!global_graph_->getNearestVertices(new_state, 2.0 * ((sem - nv).norm()),
-  // //                                        &nearest_vertices)) {
-  // //   ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertices found.");
-  // //   return;
-  // // }
-
-  // std::vector<geometry_msgs::Pose> path_ret;
-  // bool path_status = false;
-  // const int kMaxNumTrials = 5;
-  // for (int i = 0; (i < nearest_vertices.size()) && (i < kMaxNumTrials); ++i) {
-  //   nearest_vertex = nearest_vertices[i];
-  //   geometry_msgs::Pose start, end;
-  //   end.position.x = semantic.point.x;
-  //   end.position.y = semantic.point.y;
-  //   end.position.z = semantic.point.z;
-  //   end.orientation.x = 0.0;
-  //   end.orientation.y = 0.0;
-  //   end.orientation.z = 0.0;
-  //   end.orientation.w = 1.0;
-
-  //   start.position.x = nearest_vertex->state[0];
-  //   start.position.y = nearest_vertex->state[1];
-  //   start.position.z = nearest_vertex->state[2];
-  //   start.orientation.x = 0.0;
-  //   start.orientation.y = 0.0;
-  //   start.orientation.z = 0.0;
-  //   start.orientation.w = 1.0;
-
-  //   path_status = search(start, end, false, path_ret);
-
-  //   if (path_status) break;
-  // }
-
-  // if (!path_status) {
-  //   ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: Cannot connect to nearest node");
-  //   return;
-  // } else {
-  //   std::vector<Vertex*> semantic_path;
-  //   ROS_INFO_COND(global_verbosity >= Verbosity::INFO, 
-  //       "[SEMANTICS]: Found a path to the semantic point with %d vertices.",
-  //       (int)path_ret.size());
-  //   if (path_ret.size() > 2) {
-  //     for (int i = 1; i < path_ret.size(); ++i) {
-  //       StateVec next_state(path_ret[i].position.x, path_ret[i].position.y,
-  //                           path_ret[i].position.z, 0.0);
-  //       Vertex* vert = new Vertex(i, next_state);
-  //       if (i == path_ret.size() - 1) {
-  //         vert->semantic_class.value = semantic.type.value;
-  //         vert->type = VertexType::kFrontier;
-  //         vert->is_leaf_vertex = true;
-  //       } else {
-  //         vert->semantic_class.value =
-  //             planner_semantic_msgs::SemanticClass::kNone;
-  //       }
-  //       semantic_path.push_back(vert);
-  //     }
-  //   } else {
-  //     StateVec next_state(path_ret[1].position.x, path_ret[1].position.y,
-  //                         path_ret[1].position.z, 0.0);
-  //     Vertex* vert = new Vertex(global_graph_->generateVertexID(), next_state);
-  //     vert->semantic_class.value = semantic.type.value;
-  //     vert->type = VertexType::kFrontier;
-  //     vert->is_leaf_vertex = true;
-  //     global_graph_->addVertex(vert);
-  //     Eigen::Vector3d tgt_pos(vert->state[0], vert->state[1], vert->state[2]);
-  //     Eigen::Vector3d src_pos(nearest_vertex->state[0],
-  //                             nearest_vertex->state[1],
-  //                             nearest_vertex->state[2]);
-  //     global_graph_->addEdge(nearest_vertex, vert, (tgt_pos - src_pos).norm());
-  //   }
-  // }
-  // visualization_->visualizeGlobalGraph(global_graph_);
+  std::vector<geometry_msgs::Pose> approach;
+  const double d_direct =
+      (Eigen::Vector3d(dst.position.x, dst.position.y, dst.position.z) -
+       current_state_.head(3)).norm();
+  if (d_direct < 2.0 || (search(src, dst, true, approach) && !approach.empty())) {
+    if (approach.empty()) approach = {src, dst};
+    ROS_INFO("[INSPECTION] task (type %d) at (%.1f, %.1f, %.1f): approaching "
+             "via %zu waypoints", insp_type_, obj[0], obj[1], obj[2],
+             approach.size());
+    insp_state_ = InspectionState::kApproach;
+    publishInspectionPath(approach);
+  } else {
+    ROS_WARN("[INSPECTION] no path to object; inspecting from here.");
+    insp_state_ = InspectionState::kApproach;
+    insp_goal_ = current_state_.head(3);
+    insp_deadline_ = ros::Time::now();
+  }
 }
+
+bool Rrg::publishInspectionPath(const std::vector<geometry_msgs::Pose>& path) {
+  if (path.empty()) return false;
+  std::vector<geometry_msgs::Pose> interp;
+  std::vector<geometry_msgs::Pose> out = path;
+  if (Trajectory::interpolatePath(path, planning_params_.path_interpolation_distance, interp))
+    out = interp;
+  trajectory_msgs::MultiDOFJointTrajectory msg;
+  msg.header.stamp = ros::Time::now();
+  msg.header.frame_id = world_frame_;
+  double length = 0.0;
+  for (size_t i = 0; i < out.size(); ++i) {
+    trajectory_msgs::MultiDOFJointTrajectoryPoint pt;
+    geometry_msgs::Transform t;
+    t.translation.x = out[i].position.x;
+    t.translation.y = out[i].position.y;
+    t.translation.z = out[i].position.z;
+    t.rotation = out[i].orientation;
+    pt.transforms.push_back(t);
+    msg.points.push_back(pt);
+    if (i > 0) {
+      length += std::hypot(std::hypot(out[i].position.x - out[i - 1].position.x,
+                                      out[i].position.y - out[i - 1].position.y),
+                           out[i].position.z - out[i - 1].position.z);
+    }
+  }
+  adjusted_points_pub_.publish(msg);
+  visualization_->visualizeRefPath(out);
+  insp_goal_ = Eigen::Vector3d(out.back().position.x, out.back().position.y,
+                               out.back().position.z);
+  insp_deadline_ = ros::Time::now() +
+                   ros::Duration(length / std::max(0.1, planning_params_.v_max) +
+                                 insp_timeout_margin_);
+  return true;
+}
+
+std::vector<geometry_msgs::Pose> Rrg::makeTourCollisionFree(
+    const std::vector<geometry_msgs::Pose>& tour) {
+  // Consecutive LKH viewpoints are connected straight only if that segment is
+  // free in the map; otherwise the leg is replaced by a searched path.
+  std::vector<geometry_msgs::Pose> out;
+  if (tour.empty()) return out;
+  out.push_back(tour.front());
+  for (size_t i = 1; i < tour.size(); ++i) {
+    const auto& a = out.back();
+    const auto& b = tour[i];
+    Eigen::Vector3d pa(a.position.x, a.position.y, a.position.z);
+    Eigen::Vector3d pb(b.position.x, b.position.y, b.position.z);
+    if ((pb - pa).norm() < 1e-3) continue;
+    if (map_manager_->getPathStatus(pa, pb, robot_box_size_, true) ==
+        MapManager::VoxelStatus::kFree) {
+      out.push_back(b);
+      continue;
+    }
+    std::vector<geometry_msgs::Pose> leg;
+    if (search(a, b, false, leg) && leg.size() > 1) {
+      for (size_t k = 1; k < leg.size(); ++k) out.push_back(leg[k]);
+      out.back().orientation = b.orientation;  // keep viewpoint heading
+    } else {
+      ROS_WARN("[INSPECTION] viewpoint %zu unreachable, skipped", i);
+    }
+  }
+  return out;
+}
+
+void Rrg::finishInspection(bool success) {
+  insp_state_ = InspectionState::kIdle;
+  std_msgs::Bool msg;
+  msg.data = true;  // the task is closed either way; allocator moves on
+  done_inspection_.publish(msg);
+  ROS_INFO("[INSPECTION] done (%s)", success ? "completed" : "timed out");
+}
+
+void Rrg::inspectionTimerCallback(const ros::TimerEvent&) {
+  if (insp_state_ == InspectionState::kIdle) return;
+  const bool reached =
+      (current_state_.head(3) - insp_goal_).norm() < insp_reach_tol_;
+  const bool late = ros::Time::now() > insp_deadline_;
+  if (!reached && !late) return;
+
+  if (insp_state_ == InspectionState::kApproach) {
+    if (late && !reached)
+      ROS_WARN("[INSPECTION] approach timed out; starting tour from here.");
+    // Builds the viewpoint graph around the object (TSDF hole clusters +
+    // high-gain vertices), orders it with LKH, and stores the tour.
+    last_inspection_tour_.clear();
+    StateVec obj(insp_target_.x(), insp_target_.y(), insp_target_.z(), 0.0);
+    Vertex* v = new Vertex(0, obj);
+    generateGraphFromVertex(v);
+    std::vector<geometry_msgs::Pose> tour =
+        makeTourCollisionFree(last_inspection_tour_);
+    if (tour.size() < 2) {
+      ROS_WARN("[INSPECTION] empty tour.");
+      finishInspection(false);
+      return;
+    }
+    // Start the tour from where the robot is.
+    geometry_msgs::Pose here;
+    here.position.x = current_state_[0];
+    here.position.y = current_state_[1];
+    here.position.z = current_state_[2];
+    here.orientation = tour.front().orientation;
+    tour.insert(tour.begin(), here);
+    tour = makeTourCollisionFree(tour);
+    ROS_INFO("[INSPECTION] tour with %zu waypoints", tour.size());
+    insp_state_ = InspectionState::kTour;
+    publishInspectionPath(tour);
+    return;
+  }
+  // kTour
+  finishInspection(reached);
+}
+
 
 void Rrg::expandGraph(std::shared_ptr<GraphManager> graph_manager,
                       StateVec& new_state, ExpandGraphReport& rep,

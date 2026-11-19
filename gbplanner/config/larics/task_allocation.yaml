@@ -1,0 +1,13 @@
+# Dynamic task allocation (ICUAS 2025, Sec. IV-C). Loaded into ~ of Dynamic_Auction.
+strategy: auction            # auction | role
+robots: [red, blue]          # namespaces; add e.g. green for the 3-UAV runs
+roles:                       # used when strategy: role
+  red: explorer
+  blue: inspector
+exploration_time_budget: 500.0   # T_e [s]: auction opens after this
+task_merge_radius: 6.0           # detections closer than this are one object [m]
+inspection_time_per_task: 30.0   # expected inspection duration [s]
+v_max: 1.0                       # [m/s], Table I
+workload_weight: 1.0             # weight of a robot's queued time in its bid
+comm_range: 50.0                 # role mode: inspector must be within this [m]
+battery_time_budget: 1800.0      # [s]; bids that would exceed it are dropped

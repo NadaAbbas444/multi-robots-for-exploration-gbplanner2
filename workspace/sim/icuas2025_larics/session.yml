@@ -1,0 +1,71 @@
+# ICUAS 2025 multi-UAV exploration + semantic inspection on LARICS uav_ros_simulation.
+# Start inside the container with  start_sim  (workspace/bin/start_sim)
+# Environment variables (all optional):
+#   SCENARIO  cave (default) | tunnel | mine world to load
+#   WORLD     path to any .world             overrides SCENARIO
+#   NUM_UAVS  2 (default) | 3                red, blue (+ yellow)
+#   STRATEGY  auction (default) | role       task allocation
+#   SEMANTIC  true | false                   Mask R-CNN detection (default: true in tunnel)
+#   GUI       true | false (default)         Gazebo client + RViz
+#   EXPLORATION_BUDGET  seconds before tasks are auctioned (default 500)
+<%
+  scenario = ENV.fetch("SCENARIO", "cave")
+  pgs  = `rospack find planner_gazebo_sim`.strip     # works wherever the repo lives
+  cave = `rospack find subt_cave_sim`.strip
+  worlds = {
+    # 1 kHz-physics copies (worlds/larics/): ArduPilot SITL is unstable at the
+    # originals' 4-10 ms steps.
+    "cave"   => "#{pgs}/worlds/larics/darpa_cave_01.world",
+    "mine"   => "#{pgs}/worlds/larics/virginia_mine.world",
+    "tunnel" => "#{pgs}/worlds/construction_tunnel.world",
+  }
+  world    = ENV.fetch("WORLD", worlds.fetch(scenario, worlds["cave"]))
+  three    = ENV.fetch("NUM_UAVS", "2") == "3"
+  strategy = ENV.fetch("STRATEGY", "auction")
+  semantic = ENV.fetch("SEMANTIC", scenario == "tunnel" ? "true" : "false")
+  gui      = ENV.fetch("GUI", "false")
+  budget   = ENV.fetch("EXPLORATION_BUDGET", "500")
+  uavs = [["red", 0, 0, 1, 9002], ["blue", 0, 3, 2, 9012]]
+  uavs << ["yellow", 0, -3, 3, 9022] if three
+  launch = three ? "icuas2025_three_uav.launch" : "icuas2025_two_uav.launch"
+  spawn_args = uavs.map { |n, x, y, _, _| "#{n}_x:=#{x} #{n}_y:=#{y}" }.join(" ")
+%>
+name: icuas2025
+root: ./
+startup_window: roscore
+pre_window: export GAZEBO_MODEL_PATH=<%= cave %>/models:<%= pgs %>/models:$GAZEBO_MODEL_PATH
+windows:
+  - roscore:
+      layout: tiled
+      panes:
+        - roscore
+<% uavs.each do |n, x, y, id, port| %>
+        - sleep <%= id %>; export SITL_RITW_TERMINAL="tmux new-window -d -n:ardupilot<%= id %>"; waitForRos; roslaunch ardupilot_gazebo sim_vehicle.launch enable_console:=false id:=<%= id %> additional_arguments:="--no-rebuild"
+<% end %>
+<% uavs.each do |n, x, y, id, port| %>
+        - export UAV_NAMESPACE=<%= n %>; waitForRos; rosparam set use_sim_time true; roslaunch ardupilot_gazebo mavros.launch<%= id == 1 ? "" : " fcu_url:=\"udp://:#{14540 + 10*id}@localhost:#{14545 + 10*id}\" tgt_system:=#{id}" %>
+<% end %>
+  - gazebo:
+      layout: tiled
+      panes:
+        - waitForRos; roslaunch gazebo_ros empty_world.launch world_name:=<%= world %> gui:=<%= gui %> use_sim_time:=true
+<% uavs.each do |n, x, y, id, port| %>
+        - export UAV_NAMESPACE=<%= n %>; waitForRos; waitForSimulation; roslaunch ardupilot_gazebo spawn_kopterworx.launch x:=<%= x %> y:=<%= y %> z:=0.3 enable_velodyne:=true fdm_port_in:=<%= port %> fdm_port_out:=<%= port + 1 %>
+<% end %>
+  - arm&takeoff:
+      layout: tiled
+      panes:
+<% uavs.each do |n, x, y, id, port| %>
+        - export UAV_NAMESPACE=<%= n %>; waitForRos; roslaunch uav_ros_control pid_carrot.launch
+        - export UAV_NAMESPACE=<%= n %>; rosrun ardupilot_gazebo automatic_takeoff.sh 1.5
+<% end %>
+  - trajectory:
+      layout: tiled
+      panes:
+<% uavs.each do |n, x, y, id, port| %>
+        - export UAV_NAMESPACE=<%= n %>; waitForRos; roslaunch uav_ros_tracker topp_tracker.launch tracker_config:=$(rospack find gbplanner)/config/larics/topp_tracker.yaml
+<% end %>
+  - planner:
+      layout: tiled
+      panes:
+        - waitForRos; waitForSimulation; sleep 30; roslaunch gbplanner <%= launch %> strategy:=<%= strategy %> semantic:=<%= semantic %> rviz:=<%= gui %> exploration_budget:=<%= budget %> <%= spawn_args %>

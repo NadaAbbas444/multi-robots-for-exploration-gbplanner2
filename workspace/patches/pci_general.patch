@@ -1,0 +1,46 @@
+diff --git a/include/pci_general/pci_general.h b/include/pci_general/pci_general.h
+index a88bb37..a9d183c 100644
+--- a/include/pci_general/pci_general.h
++++ b/include/pci_general/pci_general.h
+@@ -54,13 +54,16 @@ class PCIGeneral : public PCIManager {
+   RunModeType run_mode_;
+   bool init_motion_enable_;
+ 
+-  ros::Publisher trajectory_pub_;
+-  ros::Publisher path_pub_;
+-
++ ros::Publisher marker_pub;
++    ros::Publisher trajectory_pub_;
++    ros::Publisher path_pub_;
++    ros::Subscriber sub;
++    
+   std::string world_frame_id_;
+   double planner_trigger_lead_time_;
+   bool smooth_heading_enable_;
+   bool homing_yaw_allocation_enable_;
++    void trajectoryCallback(const trajectory_msgs::MultiDOFJointTrajectory& msg);
+ 
+   trajectory_msgs::MultiDOFJointTrajectory samples_array_;
+   mav_msgs::EigenTrajectoryPoint trajectory_point_;
+diff --git a/src/pci_general.cpp b/src/pci_general.cpp
+index 3abf265..dd5dd4b 100644
+--- a/src/pci_general.cpp
++++ b/src/pci_general.cpp
+@@ -8,6 +8,17 @@ PCIGeneral::PCIGeneral(const ros::NodeHandle& nh,
+   trajectory_pub_ = nh_.advertise<trajectory_msgs::MultiDOFJointTrajectory>(
+       mav_msgs::default_topics::COMMAND_TRAJECTORY, 10);
+   path_pub_ = nh_.advertise<geometry_msgs::PoseArray>("pci_command_path", 10);
++ // Initialize the marker publisher
++    marker_pub = nh_.advertise<visualization_msgs::MarkerArray>("Inspection_path", 10);
++
++    // Subscribe to the trajectory topic
++    sub = nh_.subscribe("adjusted_trajectory", 10, &PCIGeneral::trajectoryCallback, this);
++
++}
++
++void PCIGeneral::trajectoryCallback(const trajectory_msgs::MultiDOFJointTrajectory& msg) {
++    auto markers = generateTrajectoryMarkerArray(msg);
++    marker_pub.publish(markers);
+ }
+ 
+ bool PCIGeneral::initialize() {

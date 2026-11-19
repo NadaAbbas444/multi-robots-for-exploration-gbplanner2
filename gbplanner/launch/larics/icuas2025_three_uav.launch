@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!-- ICUAS 2025: three-UAV variant (red/blue/yellow) on the LARICS stack, as in
+     the 3-UAV column of the task-allocation comparison (Table II). -->
+<launch>
+  <arg name="strategy" default="auction"/>   <!-- auction | role -->
+  <arg name="semantic" default="false"/>
+  <arg name="exploration_budget" default="500.0"/>  <!-- T_e [s]: auction opens after this -->
+  <arg name="rviz" default="true"/>
+  <arg name="red_x" default="0.0"/>    <arg name="red_y" default="0.0"/>
+  <arg name="blue_x" default="0.0"/>   <arg name="blue_y" default="3.0"/>
+  <arg name="yellow_x" default="0.0"/> <arg name="yellow_y" default="-3.0"/>
+  <arg name="local_yaw_deg" default="90.0"/>  <!-- LARICS SITL local frame = world rotated +90 deg (measured) -->
+  <param name="use_sim_time" value="true"/>
+
+  <include file="$(find gbplanner)/launch/larics/robot.launch">
+    <arg name="ns" value="red"/>    <arg name="peers" value="[/blue, /yellow]"/>
+    <arg name="spawn_x" value="$(arg red_x)"/> <arg name="spawn_y" value="$(arg red_y)"/>
+    <arg name="local_yaw_deg" value="$(arg local_yaw_deg)"/> <arg name="semantic" value="$(arg semantic)"/>
+  </include>
+  <include file="$(find gbplanner)/launch/larics/robot.launch">
+    <arg name="ns" value="blue"/>   <arg name="peers" value="[/red, /yellow]"/>
+    <arg name="spawn_x" value="$(arg blue_x)"/> <arg name="spawn_y" value="$(arg blue_y)"/>
+    <arg name="local_yaw_deg" value="$(arg local_yaw_deg)"/> <arg name="semantic" value="$(arg semantic)"/>
+  </include>
+  <include file="$(find gbplanner)/launch/larics/robot.launch">
+    <arg name="ns" value="yellow"/> <arg name="peers" value="[/red, /blue]"/>
+    <arg name="spawn_x" value="$(arg yellow_x)"/> <arg name="spawn_y" value="$(arg yellow_y)"/>
+    <arg name="local_yaw_deg" value="$(arg local_yaw_deg)"/> <arg name="semantic" value="$(arg semantic)"/>
+  </include>
+
+  <node if="$(arg semantic)" name="mask_rcnn" pkg="mask_rcnn_ros" type="mask_rcnn_node_modified.py"
+        output="log" launch-prefix="env PYTHONNOUSERSITE=1">
+    <rosparam param="namespaces">[red, blue, yellow]</rosparam>
+    <param name="visualization" value="false"/>
+  </node>
+
+  <node name="Dynamic_Auction" pkg="gbplanner" type="Dynamic_Auction" output="screen">
+    <rosparam command="load" file="$(find gbplanner)/config/larics/task_allocation.yaml"/>
+    <param name="strategy" value="$(arg strategy)"/>
+    <param name="exploration_time_budget" value="$(arg exploration_budget)"/>
+    <rosparam param="robots">[red, blue, yellow]</rosparam>
+    <rosparam param="roles">{red: explorer, blue: inspector, yellow: inspector}</rosparam>
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="gbplanner_ui"
+        args="-d $(find gbplanner)/config/rviz/rmf_obelix.rviz"/>
+</launch>

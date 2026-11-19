@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decentralized Exploration and Semantic Inspection</title>
+<meta name="description" content="Graph-based decentralized exploration and semantic inspection for multi-robot systems (ICUAS 2025).">
+<style>
+  :root {
+    --bg: #fbfbf9; --fg: #1d2125; --muted: #5d656d; --line: #e2e2dc;
+    --card: #ffffff; --accent: #b4462c; --accent-soft: #f5e6e1;
+    --red: #c0392b; --blue: #2c6fb4; --yellow: #c9961a; --code: #f2f1ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15181b; --fg: #e8e6e1; --muted: #a2a8ae; --line: #2c3136;
+      --card: #1c2024; --accent: #e07a5f; --accent-soft: #33231e;
+      --red: #e06656; --blue: #6aa5e6; --yellow: #e2b84a; --code: #22272c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15181b; --fg: #e8e6e1; --muted: #a2a8ae; --line: #2c3136;
+    --card: #1c2024; --accent: #e07a5f; --accent-soft: #33231e;
+    --red: #e06656; --blue: #6aa5e6; --yellow: #e2b84a; --code: #22272c;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 17px/1.6 "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 56px 0 28px; border-bottom: 1px solid var(--line); }
+  .venue { font: 600 13px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: .08em;
+           text-transform: uppercase; color: var(--accent); }
+  h1 { font-size: clamp(28px, 5vw, 40px); line-height: 1.15; margin: 14px 0 16px; font-weight: 600; }
+  .authors { font-size: 18px; }
+  .affil { color: var(--muted); font-size: 15px; margin-top: 2px; }
+  .links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px;
+           font: 500 15px/1 ui-sans-serif, system-ui, sans-serif; }
+  .links a { color: var(--fg); text-decoration: none; border: 1px solid var(--line);
+             background: var(--card); padding: 10px 14px; border-radius: 8px; }
+  .links a:hover { border-color: var(--accent); color: var(--accent); }
+  section { padding: 34px 0; border-bottom: 1px solid var(--line); }
+  h2 { font: 600 14px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: .08em;
+       text-transform: uppercase; color: var(--muted); margin: 0 0 18px; }
+  p { margin: 0 0 14px; }
+  .lede { font-size: 19px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 16px; }
+  figure { margin: 6px 0 0; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 15px; margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; font: 15px/1.4 ui-sans-serif, system-ui, sans-serif;
+          font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; }
+  tr.best td { color: var(--accent); font-weight: 600; }
+  .tables { display: grid; gap: 26px; }
+  .tcap { font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; color: var(--muted); margin: 8px 0 0; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px;
+        overflow-x: auto; font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 0 0 14px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
+  footer { padding: 28px 0 48px; color: var(--muted); font-size: 15px; }
+  footer a, section a { color: var(--accent); }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="venue">ICUAS 2025</div>
+    <h1>Graph-Based Decentralized Exploration and Semantic Inspection for Multi-Robot Systems</h1>
+    <div class="authors">Nada E. Abbas &nbsp;·&nbsp; Tamara Petrović</div>
+    <div class="affil">LARICS Laboratory for Robotics and Intelligent Control Systems,
+      Faculty of Electrical Engineering and Computing, University of Zagreb</div>
+    <div class="links">
+      <a href="https://github.com/NadaAbbas444/multi-robots-for-exploration-gbplanner2">Code</a>
+      <a href="#run">Run it</a>
+      <a href="#cite">BibTeX</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>Overview</h2>
+    <p class="lede">A team of UAVs explores an unknown subterranean or large-scale space, finds
+      objects of interest and builds detailed surface models of them. No central controller is involved:
+      each UAV plans for itself and shares only what its peers need.</p>
+    <p>Each UAV runs a graph-based planner: a dense local random graph for the next move, and a
+      sparse global graph for repositioning when it hits a dead end or must return home before the
+      battery runs out. Instead of exchanging full maps, UAVs exchange <em>No-Go Zones</em>, volumes around
+      goals they have already visited. A peer may fly through a No-Go Zone, but it never selects a frontier
+      inside one. Detected objects become tasks, distributed by an auction or by fixed explorer and
+      inspector roles. They are then inspected along a shortest tour through viewpoints placed where the
+      object's surface is still unmapped.</p>
+  </section>
+
+  <section>
+    <h2>System</h2>
+    <figure>
+      <svg viewBox="0 0 820 360" role="img" aria-label="System architecture: each UAV runs exploration, inspection and allocation; UAVs exchange No-Go Zones and graph data peer to peer.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+          </marker>
+          <style>
+            .box { fill: var(--card); stroke: var(--line); stroke-width: 1.5; }
+            .t  { font: 600 14px ui-sans-serif, system-ui, sans-serif; fill: var(--fg); }
+            .s  { font: 12.5px ui-sans-serif, system-ui, sans-serif; fill: var(--muted); }
+            .uav { font: 700 13px ui-sans-serif, system-ui, sans-serif; letter-spacing: .06em; }
+            .flow { stroke: var(--muted); stroke-width: 1.6; fill: none; color: var(--muted); }
+            .p2p { stroke: var(--accent); stroke-width: 2; fill: none; stroke-dasharray: 6 5; color: var(--accent); }
+          </style>
+        </defs>
+        <!-- UAV columns -->
+        <g>
+          <rect x="16" y="20" width="300" height="320" rx="12" fill="none" stroke="var(--red)" stroke-width="1.5"/>
+          <text x="32" y="44" class="uav" fill="var(--red)">UAV · RED</text>
+          <rect class="box" x="36" y="60" width="260" height="58" rx="8"/>
+          <text x="52" y="84" class="t">Graph-based exploration</text>
+          <text x="52" y="104" class="s">local RRG · global graph · auto-homing</text>
+          <rect class="box" x="36" y="140" width="260" height="58" rx="8"/>
+          <text x="52" y="164" class="t">Semantic detection</text>
+          <text x="52" y="184" class="s">Mask R-CNN → object position</text>
+          <rect class="box" x="36" y="220" width="260" height="58" rx="8"/>
+          <text x="52" y="244" class="t">Inspection planner</text>
+          <text x="52" y="264" class="s">TSDF hole clusters → viewpoints → LKH tour</text>
+          <path class="flow" d="M166 118 V140" marker-end="url(#ar)"/>
+          <path class="flow" d="M166 198 V220" marker-end="url(#ar)"/>
+          <text x="52" y="316" class="s">voxblox TSDF map · LiDAR + RGB-D</text>
+        </g>
+        <g>
+          <rect x="504" y="20" width="300" height="320" rx="12" fill="none" stroke="var(--blue)" stroke-width="1.5"/>
+          <text x="520" y="44" class="uav" fill="var(--blue)">UAV · BLUE</text>
+          <rect class="box" x="524" y="60" width="260" height="58" rx="8"/>
+          <text x="540" y="84" class="t">Graph-based exploration</text>
+          <text x="540" y="104" class="s">local RRG · global graph · auto-homing</text>
+          <rect class="box" x="524" y="140" width="260" height="58" rx="8"/>
+          <text x="540" y="164" class="t">Semantic detection</text>
+          <text x="540" y="184" class="s">Mask R-CNN → object position</text>
+          <rect class="box" x="524" y="220" width="260" height="58" rx="8"/>
+          <text x="540" y="244" class="t">Inspection planner</text>
+          <text x="540" y="264" class="s">TSDF hole clusters → viewpoints → LKH tour</text>
+          <path class="flow" d="M654 118 V140" marker-end="url(#ar)"/>
+          <path class="flow" d="M654 198 V220" marker-end="url(#ar)"/>
+          <text x="540" y="316" class="s">voxblox TSDF map · LiDAR + RGB-D</text>
+        </g>
+        <!-- p2p link -->
+        <path class="p2p" d="M300 89 H520" marker-start="url(#ar)" marker-end="url(#ar)"/>
+        <text x="410" y="74" text-anchor="middle" class="t" fill="var(--accent)">No-Go Zones + key paths</text>
+        <text x="410" y="108" text-anchor="middle" class="s">peer to peer, no full-map sync</text>
+        <!-- allocation -->
+        <rect class="box" x="330" y="160" width="160" height="88" rx="8"/>
+        <text x="410" y="186" text-anchor="middle" class="t">Task allocation</text>
+        <text x="410" y="206" text-anchor="middle" class="s">auction  or  roles</text>
+        <text x="410" y="226" text-anchor="middle" class="s">tasks = detected objects</text>
+        <path class="flow" d="M296 169 H330" marker-end="url(#ar)"/>
+        <path class="flow" d="M524 169 H490" marker-end="url(#ar)"/>
+        <path class="flow" d="M330 236 H296" marker-end="url(#ar)"/>
+        <path class="flow" d="M490 236 H524" marker-end="url(#ar)"/>
+      </svg>
+      <figcaption>Each UAV explores and inspects independently. Peers share No-Go Zones and graph key
+        paths, and detected objects are distributed as inspection tasks.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Components</h2>
+    <div class="grid">
+      <div class="card"><h3>Local and global planning</h3>
+        <p>An RRG samples collision-free configurations in an adaptive bounding box. Paths with high
+          exploration gain feed a sparse global graph used for repositioning and homing.</p></div>
+      <div class="card"><h3>No-Go Zones</h3>
+        <p>Uniform volumes around visited goals, shared between UAVs. Frontiers inside them get zero
+          gain, so a peer's explored region is never chosen as a goal again.</p></div>
+      <div class="card"><h3>Semantic inspection</h3>
+        <p>Unmapped voxels inside the object's bounding box are clustered. Viewpoints near the clusters
+          and with high gain are ordered by the Lin-Kernighan-Helsgaun heuristic.</p></div>
+      <div class="card"><h3>Task allocation</h3>
+        <p>Sequential auction on travel time, inspection time and workload, respecting each UAV's
+          remaining battery. Role-based allocation is the baseline.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Results</h2>
+    <div class="tables">
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Task allocation</th><th class="num">2 UAVs (s)</th><th class="num">3 UAVs (s)</th></tr></thead>
+          <tbody>
+            <tr><td>Role-based</td><td class="num">192.3 ± 10.6</td><td class="num">185.7 ± 9.8</td></tr>
+            <tr class="best"><td>Auction-based</td><td class="num">174.8 ± 9.4</td><td class="num">169.2 ± 8.7</td></tr>
+          </tbody>
+        </table>
+        <p class="tcap">Total mission completion time, 5 tasks, mean ± SD over 18 trials. The auction is
+          significantly faster (paired t-test, p &lt; 0.05).</p>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Inspection</th><th class="num">Unmapped before</th><th class="num">Unmapped after</th><th class="num">Duration (s)</th></tr></thead>
+          <tbody>
+            <tr class="best"><td>Graph-based (ours)</td><td class="num">23.79 %</td><td class="num">1.52 %</td><td class="num">111.57</td></tr>
+            <tr><td>Next-View Point</td><td class="num">22.31 %</td><td class="num">5.29 %</td><td class="num">110.54</td></tr>
+          </tbody>
+        </table>
+        <p class="tcap">Unmapped object surface before and after inspection (bus and truck in a tunnel
+          under construction), average of 5 runs, both with a 112 s budget.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="run">
+    <h2>Run it</h2>
+    <p>Everything runs in Docker (ROS Noetic, Gazebo 11, ArduPilot SITL through the LARICS UAV
+      simulation stack). You only need Docker and an X server.</p>
+<pre>mkdir -p ~/icuas2025_ws/src &amp;&amp; cd ~/icuas2025_ws/src
+git clone https://github.com/NadaAbbas444/multi-robots-for-exploration-gbplanner2.git
+./multi-robots-for-exploration-gbplanner2/workspace/setup_workspace.sh
+./multi-robots-for-exploration-gbplanner2/workspace/docker/run.sh</pre>
+    <p>Inside the container:</p>
+<pre>build_ws
+start_sim                              # 2 UAVs, DARPA cave
+start_exploration
+SCENARIO=tunnel STRATEGY=role start_sim  # semantic inspection, role-based allocation</pre>
+    <p>All options are listed in the <a href="https://github.com/NadaAbbas444/multi-robots-for-exploration-gbplanner2#readme">README</a>.</p>
+  </section>
+
+  <section id="cite">
+    <h2>Citation</h2>
+<pre>@inproceedings{abbas2025graph,
+  title     = {Graph-Based Decentralized Exploration and Semantic
+               Inspection for Multi-Robot Systems},
+  author    = {Abbas, Nada E. and Petrovi{\'c}, Tamara},
+  booktitle = {2025 International Conference on Unmanned Aircraft
+               Systems (ICUAS)},
+  year      = {2025}
+}</pre>
+  </section>
+</main>
+
+<footer class="wrap">
+  Built on <a href="https://github.com/ntnu-arl/gbplanner_ros">gbplanner_ros</a>,
+  <a href="https://github.com/ethz-asl/voxblox">voxblox</a> and the
+  <a href="https://github.com/larics/uav_ros_simulation">LARICS UAV simulation stack</a>.
+</footer>
+</body>
+</html>

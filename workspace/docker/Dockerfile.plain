@@ -1,0 +1,40 @@
+# ROS 1 Noetic build/run environment for the ICUAS 2025 multi-robot
+# exploration + semantic inspection workspace (gbplanner-based).
+FROM osrf/ros:noetic-desktop-full
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3-catkin-tools python3-pip git wget unzip \
+      autoconf automake libtool build-essential cmake \
+      libgoogle-glog-dev libgflags-dev libprotobuf-dev protobuf-compiler \
+      libyaml-cpp-dev libeigen3-dev qtbase5-dev \
+      ros-noetic-pcl-ros ros-noetic-pcl-conversions \
+      ros-noetic-octomap-msgs ros-noetic-octomap-ros \
+      ros-noetic-mavros-msgs ros-noetic-joy ros-noetic-twist-mux \
+      ros-noetic-interactive-marker-twist-server ros-noetic-controller-manager \
+      ros-noetic-gazebo-ros-control ros-noetic-velodyne-gazebo-plugins \
+      ros-noetic-rqt-gui ros-noetic-rqt-gui-py ros-noetic-topic-tools \
+      ros-noetic-tf-conversions ros-noetic-eigen-conversions \
+      ros-noetic-cmake-modules ros-noetic-xacro \
+    && rm -rf /var/lib/apt/lists/*
+
+# LKH-3 TSP solver (semantic inspection tour). The author's site
+# (webhotel4.ruc.dk) is unreachable from this network, so we build the
+# unmodified GitHub mirror cerebis/LKH3 (LKH 3.0.6) pinned to a fixed commit.
+# A local docker/LKH-3.0.9.tgz from the official site takes precedence.
+# Optional: without LKH the planner falls back to nearest-neighbour + 2-opt.
+ARG LKH_MIRROR_COMMIT=9a51de3161f2746e969f7a2e33220f637da64e54
+COPY . /tmp/ctx
+RUN set -e; mkdir -p /opt/lkh && cd /opt/lkh; \
+    if [ -f /tmp/ctx/LKH-3.0.9.tgz ]; then tar xzf /tmp/ctx/LKH-3.0.9.tgz --strip-components=1; \
+    else wget -q --timeout=60 -O lkh.tgz https://codeload.github.com/cerebis/LKH3/tar.gz/${LKH_MIRROR_COMMIT} \
+         && tar xzf lkh.tgz --strip-components=1 && rm lkh.tgz; fi; \
+    make -j"$(nproc)" && cp LKH /usr/local/bin/LKH; \
+    cd / && rm -rf /opt/lkh /tmp/ctx; LKH < /dev/null | head -1 || true
+
+RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc \
+ && echo "[ -f /ws/devel_noetic/setup.bash ] && source /ws/devel_noetic/setup.bash" >> /root/.bashrc
+
+WORKDIR /ws

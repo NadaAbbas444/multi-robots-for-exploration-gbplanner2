@@ -1,0 +1,22 @@
+# LARICS TOPP-RA trajectory tracker limits, matched to the planner (Table I of
+# the paper: v_max = 1.0 m/s). The stock config allows 5 m/s, which made the
+# UAVs overshoot planned paths in narrow passages.
+# Yaw rate: 0.5 rad/s instead of the paper's 0.15 so inspection tours, which
+# turn toward the object at every viewpoint, keep to the paper's ~110 s budget.
+topp_tracker:
+  from_odom: False
+  sampling_frequency: 100
+  n_gridpoints: 500
+  request_permission: False
+
+  constraints:
+    velocity:
+      x: 1.0
+      y: 1.0
+      z: 1.0
+      yaw: 0.5
+    acceleration:
+      x: 1.0
+      y: 1.0
+      z: 1.0
+      yaw: 0.5

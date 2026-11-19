@@ -1,0 +1,59 @@
+# ICUAS 2025 workspace on top of the LARICS UAV simulation stack
+# (ArduPilot SITL + Gazebo 11 + uav_ros_stack, ROS Noetic / Ubuntu 20.04).
+# The catkin workspace is mounted at /ws and built into build_larics/ (build_ws).
+FROM lmark1/uav_ros_simulation:focal-nogpu-bin-0.2.3
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+# The base image ships an expired ROS apt signing key (EXPKEYSIG F42ED6FBAB17C654),
+# which leaves apt on a stale index (-> 404s). Install the current official key.
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+      -o /usr/share/keyrings/ros-archive-keyring.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros/ubuntu focal main" \
+      > /etc/apt/sources.list.d/ros1-latest.list \
+ && rm -f /etc/apt/sources.list.d/ros-latest.list \
+ && (apt-key del F42ED6FBAB17C654 >/dev/null 2>&1 || true)
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-noetic-pcl-ros ros-noetic-pcl-conversions \
+      ros-noetic-octomap-msgs ros-noetic-octomap-ros \
+      ros-noetic-interactive-marker-twist-server ros-noetic-twist-mux \
+      python3-catkin-tools autoconf automake libtool wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# LKH-3 TSP solver: unmodified GitHub mirror cerebis/LKH3 (LKH 3.0.6), pinned.
+# (The author's site webhotel4.ruc.dk is unreachable from this network.)
+ARG LKH_MIRROR_COMMIT=9a51de3161f2746e969f7a2e33220f637da64e54
+RUN mkdir -p /opt/lkh && cd /opt/lkh \
+ && wget -q --timeout=60 -O lkh.tgz https://codeload.github.com/cerebis/LKH3/tar.gz/${LKH_MIRROR_COMMIT} \
+ && tar xzf lkh.tgz --strip-components=1 && make -j"$(nproc)" \
+ && cp LKH /usr/local/bin/LKH && cd / && rm -rf /opt/lkh
+
+# Velodyne LiDAR-X model used by the kopterworx drone (enable_velodyne:=true).
+# Noetic is EOL and the apt packages now 404, so build LARICS's fork, pinned.
+ARG VELODYNE_COMMIT=d81841f94d8d2462ee98f540b5b393a85894b429
+RUN mkdir -p /root/extra_ws/src && cd /root/extra_ws/src \
+ && wget -q --timeout=60 -O v.tgz https://codeload.github.com/larics/velodyne_simulator/tar.gz/${VELODYNE_COMMIT} \
+ && tar xzf v.tgz && rm v.tgz \
+ && source /opt/ros/noetic/setup.bash && source /root/uav_ws/install/setup.bash \
+ && source /root/sim_ws/devel/setup.bash && cd /root/extra_ws \
+ && catkin init >/dev/null && catkin build --no-status -DCMAKE_BUILD_TYPE=Release
+
+# Mask R-CNN (semantic detection) on TensorFlow 2.4 CPU. Installed into
+# /usr/local; ArduPilot's tools keep their newer numpy in /root/.local, so the
+# detector node runs with PYTHONNOUSERSITE=1 (see icuas2025_*.launch).
+RUN pip3 install --no-cache-dir --ignore-installed wrapt \
+      "tensorflow-cpu==2.4.4" "keras==2.4.3" "h5py==2.10.0" \
+      "scikit-image==0.18.3" "scipy<1.8" "numpy==1.19.5"
+
+# ICUAS_HOME (set by docker/run.sh) = this repository inside /ws; its
+# workspace/bin holds build_ws, start_sim, stop_sim, run_test, ...
+# Overlay order: Noetic -> LARICS uav_ws/sim_ws -> extra_ws -> this workspace.
+RUN echo 'source /root/extra_ws/devel/setup.bash' >> /root/.bashrc \
+ && echo '[ -f /ws/devel_larics/setup.bash ] && source /ws/devel_larics/setup.bash' >> /root/.bashrc \
+ && echo '# uav_ws is an install space that devel chains drop; re-add it (as LARICS does).' >> /root/.bashrc \
+ && echo 'export ROS_PACKAGE_PATH=/root/uav_ws/install/share:$ROS_PACKAGE_PATH' >> /root/.bashrc \
+ && echo '[ -n "$ICUAS_HOME" ] && export PATH=$ICUAS_HOME/workspace/bin:$PATH' >> /root/.bashrc
+
+WORKDIR /ws

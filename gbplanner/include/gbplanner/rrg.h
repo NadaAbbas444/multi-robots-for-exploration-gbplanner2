@@ -373,6 +373,25 @@ bool validateGraph();
   int pruneGlobalFrontiersInNoGoZones();
   void publishOwnNoGoZones();
 
+  // --- Semantic inspection state machine (ICUAS 2025, Sec. IV-B) ---------
+  // IDLE -> APPROACH (fly to a free graph vertex near the object)
+  //      -> TOUR (LKH tour over the viewpoint graph) -> report done -> IDLE
+  enum class InspectionState { kIdle, kApproach, kTour };
+  InspectionState insp_state_ = InspectionState::kIdle;
+  Eigen::Vector3d insp_target_;
+  int insp_type_ = 0;
+  Eigen::Vector3d insp_goal_;      // end point of the current leg
+  ros::Time insp_deadline_;
+  ros::Timer insp_timer_;
+  void inspectionTimerCallback(const ros::TimerEvent&);
+  bool publishInspectionPath(const std::vector<geometry_msgs::Pose>& path);
+  std::vector<geometry_msgs::Pose> makeTourCollisionFree(
+      const std::vector<geometry_msgs::Pose>& tour);
+  void finishInspection(bool success);
+  std::vector<geometry_msgs::Pose> last_inspection_tour_;
+  double insp_reach_tol_ = 1.0;     // [m]
+  double insp_timeout_margin_ = 30.0;  // [s] on top of path_length / v_max
+
   bool no_go_zones_enable_ = true;
   double no_go_zone_radius_ = 3.0;
   double no_go_zone_min_spacing_ = 1.5;

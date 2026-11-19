@@ -4,6 +4,7 @@
 <launch>
   <arg name="strategy" default="auction"/>   <!-- auction | role -->
   <arg name="semantic" default="false"/>
+  <arg name="exploration_budget" default="500.0"/>  <!-- T_e [s]: auction opens after this -->
   <arg name="rviz" default="true"/>
   <arg name="red_x" default="0.0"/>  <arg name="red_y" default="0.0"/>
   <arg name="blue_x" default="0.0"/> <arg name="blue_y" default="3.0"/>
@@ -23,9 +24,18 @@
     <arg name="semantic" value="$(arg semantic)"/>
   </include>
 
+  <!-- Mask R-CNN (TF 2.4) for all UAVs. PYTHONNOUSERSITE keeps ArduPilot's
+       newer numpy in ~/.local from shadowing the TF-compatible one. -->
+  <node if="$(arg semantic)" name="mask_rcnn" pkg="mask_rcnn_ros" type="mask_rcnn_node_modified.py"
+        output="log" launch-prefix="env PYTHONNOUSERSITE=1">
+    <rosparam param="namespaces">[red, blue]</rosparam>
+    <param name="visualization" value="false"/>
+  </node>
+
   <node name="Dynamic_Auction" pkg="gbplanner" type="Dynamic_Auction" output="screen">
-    <rosparam command="load" file="$(find gbplanner)/config/rmf_obelix/task_allocation.yaml"/>
+    <rosparam command="load" file="$(find gbplanner)/config/larics/task_allocation.yaml"/>
     <param name="strategy" value="$(arg strategy)"/>
+    <param name="exploration_time_budget" value="$(arg exploration_budget)"/>
     <rosparam param="robots">[red, blue]</rosparam>
   </node>
 
