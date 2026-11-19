@@ -116,6 +116,7 @@ void Rrg::initializeAttributes(const std::string& ns) {
   nh_private_.param("no_go_zones/radius", no_go_zone_radius_, 3.0);
   nh_private_.param("no_go_zones/min_spacing", no_go_zone_min_spacing_, 1.5);
   nh_private_.param("no_go_zones/apply_own_zones", no_go_apply_own_zones_, false);
+  nh_private_.param("use_central_frontier_assigner", use_central_frontier_assigner_, false);
   if (!nh_private_.getParam("peer_namespaces", peer_namespaces_) ||
       peer_namespaces_.empty()) {
     peer_namespaces_ = {(robot_ns_ == "/red") ? "/blue" : "/red"};
@@ -2272,20 +2273,18 @@ Rrg::GraphStatus Rrg::evaluateGraph() {
     }
 }
 
-    if (!ros::service::waitForService("assign_frontier", ros::Duration(10))) {
-        ROS_ERROR("Service not available after waiting");
-    }
-
-    // Call the service
-    if (frontier_request_client_.call(srv)) {
+    // Optional central frontier assigner (p2p node). Off by default: the
+    // paper's coordination is decentralized (No-Go Zones), and waiting for an
+    // absent service stalled every iteration by 10 s.
+    if (use_central_frontier_assigner_ &&
+        frontier_request_client_.waitForExistence(ros::Duration(1.0)) &&
+        frontier_request_client_.call(srv)) {
         if (srv.response.success) {
               auto id = srv.response.assigned_frontier_id;
               best_path_id = id;
         } else {
             ROS_INFO("Failed to assign a valid frontier");
         }
-    } else {
-        ROS_INFO("Failed to call frontier request service");
     }
 
 
@@ -6129,9 +6128,9 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
           current_to_frontier_distance / planning_params_.v_homing_max;
       double time_to_home =
           frontier_to_home_distance / planning_params_.v_homing_max;
-      double time_cost = time_to_target + planning_params_.auto_homing_enable
-                             ? time_to_home
-                             : 0;
+      double time_cost = time_to_target + (planning_params_.auto_homing_enable
+                                               ? time_to_home
+                                               : 0.0);
       double time_spare = 0;
       if (!isRemainingTimeSufficient(time_cost, time_spare)) {
         time_spare = 1;
@@ -6177,13 +6176,11 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
         srv.request.ids.push_back(vertex->id);
     }
 
-    // Call the service to determine the best frontier
-    if (!ros::service::waitForService("assign_frontier", ros::Duration(10))) {
-        ROS_ERROR("Service not available after waiting");
-        return std::vector<geometry_msgs::Pose>(); // Return an empty vector if the service is not available
-    }
-    
-    if (frontier_request_client_.call(srv) && srv.response.success) {
+    // Optional central override of the gain-based choice above (see local
+    // planner). Without it, keep gbplanner's own best frontier.
+    if (use_central_frontier_assigner_ &&
+        frontier_request_client_.waitForExistence(ros::Duration(1.0)) &&
+        frontier_request_client_.call(srv) && srv.response.success) {
         int best_frontier_id = srv.response.assigned_frontier_id;
         ROS_INFO("Assigned best frontier ID: %d", best_frontier_id);
         // Now find the Vertex* that matches this ID for further processing
@@ -6200,8 +6197,8 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
             ROS_INFO("Proceeding with best frontier at position (%.2f, %.2f, %.2f)",
                     best_frontier->state.x(), best_frontier->state.y(), best_frontier->state.z());
         }
-    } else {
-        ROS_ERROR("Failed to assign a valid frontier or to call the frontier request service");
+    } else if (use_central_frontier_assigner_) {
+        ROS_WARN("Central frontier assigner unavailable; using local best frontier.");
     }
     // // Print out
     // ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "List of potential frontier in decreasing order of gain:");

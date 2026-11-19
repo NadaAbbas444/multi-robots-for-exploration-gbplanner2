@@ -33,6 +33,9 @@ target_link_libraries(trajectory_transformer
   ${Boost_LIBRARIES}   # Only needed if you actually use Boost in your code
 )
 
+add_executable(cloud_frame_relay src/cloud_frame_relay.cpp)
+target_link_libraries(cloud_frame_relay ${catkin_LIBRARIES})
+
 add_executable(p2p src/p2p.cpp)
 target_link_libraries(p2p
   ${catkin_LIBRARIES}  # This ensures all ROS core libraries are linked

@@ -377,6 +377,7 @@ bool validateGraph();
   double no_go_zone_radius_ = 3.0;
   double no_go_zone_min_spacing_ = 1.5;
   bool no_go_apply_own_zones_ = false;
+  bool use_central_frontier_assigner_ = false;  // p2p.cpp /assign_frontier
   std::string robot_ns_;
   std::vector<std::string> peer_namespaces_;
   std::vector<NoGoZone> no_go_zones_;

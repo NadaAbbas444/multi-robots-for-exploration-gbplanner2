@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<!-- Planning stack for ONE UAV of the ICUAS 2025 system on the LARICS sim. -->
+<launch>
+  <arg name="ns"/>                          <!-- e.g. red -->
+  <arg name="peers"/>                       <!-- e.g. "[/blue]" -->
+  <arg name="spawn_x" default="0.0"/>
+  <arg name="spawn_y" default="0.0"/>
+  <arg name="local_yaw_deg" default="0.0"/>
+  <arg name="semantic" default="false"/>    <!-- Mask R-CNN + object localisation -->
+  <arg name="config_dir" default="$(find gbplanner)/config/rmf_obelix"/>
+
+  <group ns="$(arg ns)">
+    <!-- LARICS LiDAR-X publishes in an un-namespaced "velodyne" frame that is
+         not attached to the robot in TF. Re-stamp it and attach it here, using
+         the mount from kopterworx.urdf.xacro (horizontal_velodyne_origin) and
+         LiDAR-X.urdf.xacro (base_scan_joint). -->
+    <node pkg="gbplanner" type="cloud_frame_relay" name="cloud_frame_relay">
+      <param name="input" value="/$(arg ns)/velodyne_points"/>
+      <param name="output" value="/$(arg ns)/velodyne_points_ns"/>
+      <param name="frame_id" value="$(arg ns)/velodyne"/>
+    </node>
+    <!-- args: x y z yaw pitch roll parent child -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="tf_lidar_mount"
+          args="0.08 0 -0.1578 0 0.1323284641020683 -3.141592653589793 $(arg ns)/base_link $(arg ns)/velodyne_base_link"/>
+    <node pkg="tf2_ros" type="static_transform_publisher" name="tf_lidar_scan"
+          args="0 0 0.0377 0 0 0 $(arg ns)/velodyne_base_link $(arg ns)/velodyne"/>
+
+    <node pkg="gbplanner" type="gbplanner_node" name="gbplanner_node" output="screen">
+      <remap from="odometry" to="/$(arg ns)/odometry"/>
+      <remap from="pointcloud" to="/$(arg ns)/velodyne_points"/>
+      <rosparam command="load" file="$(arg config_dir)/gbplanner_config.yaml"/>
+      <rosparam command="load" file="$(arg config_dir)/voxblox_sim_config.yaml"/>
+      <rosparam param="peer_namespaces" subst_value="true">$(arg peers)</rosparam>
+      <param name="world_frame" value="world"/>
+      <!-- read by the modified voxblox TsdfServer (~pointcloud_topic) -->
+      <param name="pointcloud_topic" value="/$(arg ns)/velodyne_points_ns"/>
+    </node>
+
+    <node pkg="pci_general" type="pci_general_ros_node" name="pci_general_ros_node" output="screen">
+      <remap from="command/trajectory" to="/$(arg ns)/command/trajectory"/>
+      <remap from="planner_server" to="gbplanner"/>
+      <remap from="planner_homing_server" to="gbplanner/homing"/>
+      <remap from="odometry" to="/$(arg ns)/odometry"/>
+      <rosparam command="load" file="$(arg config_dir)/planner_control_interface_sim_config.yaml"/>
+    </node>
+
+    <node pkg="gbplanner" type="trajectory_transformer" name="trajectory_transformer" output="screen">
+      <param name="robot" value="$(arg ns)"/>
+      <param name="offset_x" value="$(arg spawn_x)"/>
+      <param name="offset_y" value="$(arg spawn_y)"/>
+      <param name="yaw_deg" value="$(arg local_yaw_deg)"/>
+    </node>
+
+    <group if="$(arg semantic)">
+      <node name="mask_rcnn" pkg="mask_rcnn_ros" type="mask_rcnn_node_modified.py" output="log">
+        <param name="~namespace" value="$(arg ns)"/>
+        <param name="~visualization" value="true"/>
+      </node>
+      <node pkg="mask_rcnn_ros" type="object_location_modified.py" name="semantic_depth_processor" output="screen">
+        <param name="~namespace" value="$(arg ns)"/>
+      </node>
+    </group>
+  </group>
+</launch>
