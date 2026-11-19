@@ -126,12 +126,13 @@ class SemanticDepthProcessor:
                 rospy.sleep(5)
 
 
-    def handle_object_detection(self, depth_image, i):
-        class_name = self.current_segmentation.class_names[i]
-        score = self.current_segmentation.scores[i]
+    def handle_object_detection(self, depth_image, i, seg=None):
+        seg = seg or self.current_segmentation
+        class_name = seg.class_names[i]
+        score = seg.scores[i]
         if class_name in ["car", "truck","bus","motorcycle"] and score > self.min_score:
             # print("class_name",class_name,"score",score)
-            self.process_object(depth_image, self.current_segmentation.boxes[i], class_name)
+            self.process_object(depth_image, seg.boxes[i], class_name)
 
     def depth_callback(self, msg):
         if not self.global_planner_service_available:
@@ -140,10 +141,12 @@ class SemanticDepthProcessor:
 
         try:
             depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='32FC1')
-            if self.current_segmentation and self.current_segmentation.boxes:
-                min_length = min(len(self.current_segmentation.boxes), len(self.current_segmentation.class_names), len(self.current_segmentation.scores))
+            # Snapshot: the segmentation callback may replace it mid-loop.
+            seg = self.current_segmentation
+            if seg and seg.boxes:
+                min_length = min(len(seg.boxes), len(seg.class_names), len(seg.scores))
                 for i in range(min_length):
-                    self.handle_object_detection(depth_image, i)
+                    self.handle_object_detection(depth_image, i, seg)
         except Exception as e:
             rospy.logerr("Error processing depth image: {}".format(e))
 

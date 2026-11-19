@@ -382,6 +382,7 @@ bool validateGraph();
   int insp_type_ = 0;
   Eigen::Vector3d insp_goal_;      // end point of the current leg
   ros::Time insp_deadline_;
+  ros::Time insp_earliest_done_;
   ros::Timer insp_timer_;
   void inspectionTimerCallback(const ros::TimerEvent&);
   bool publishInspectionPath(const std::vector<geometry_msgs::Pose>& path);

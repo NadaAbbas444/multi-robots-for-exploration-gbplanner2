@@ -36,6 +36,9 @@ target_link_libraries(trajectory_transformer
 add_executable(cloud_frame_relay src/cloud_frame_relay.cpp)
 target_link_libraries(cloud_frame_relay ${catkin_LIBRARIES})
 
+add_executable(local_odom_bridge src/local_odom_bridge.cpp)
+target_link_libraries(local_odom_bridge ${catkin_LIBRARIES})
+
 add_executable(p2p src/p2p.cpp)
 target_link_libraries(p2p
   ${catkin_LIBRARIES}  # This ensures all ROS core libraries are linked

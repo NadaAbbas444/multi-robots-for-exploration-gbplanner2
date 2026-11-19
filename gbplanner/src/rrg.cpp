@@ -858,7 +858,9 @@ for (int i = 0; i < random_points_count; ++i) {
                 if (nearby_vertex != new_vertex) {
                     Eigen::Vector3d direction = new_vertex->state.head(3) - nearby_vertex->state.head(3);
                     double direction_norm = direction.norm();
-                    if (direction_norm != 0) {
+                    if (direction_norm != 0 &&
+                        map_manager_->getPathStatus(new_vertex->state.head(3), nearby_vertex->state.head(3),
+                                                    robot_box_size_, false) != MapManager::VoxelStatus::kOccupied) {
                         exploration_graph_->addEdge(new_vertex, nearby_vertex, direction_norm);
                     }
                 }
@@ -1077,6 +1079,32 @@ bool Rrg::validateSample(Vertex* vertex) {
 }
 
 
+// Shortest path between two points through a collision-checked graph
+// (nearest vertices as entry/exit). Returns false if not connected.
+static bool graphPathBetween(std::shared_ptr<GraphManager> g,
+                             const Eigen::Vector3d& a, const Eigen::Vector3d& b,
+                             std::vector<Eigen::Vector3d>& out) {
+  out.clear();
+  if (!g || g->getNumVertices() < 2) return false;
+  StateVec sa(a.x(), a.y(), a.z(), 0.0), sb(b.x(), b.y(), b.z(), 0.0);
+  Vertex *va = nullptr, *vb = nullptr;
+  if (!g->getNearestVertex(&sa, &va) || !g->getNearestVertex(&sb, &vb) || !va || !vb)
+    return false;
+  ShortestPathsReport rep;
+  if (!g->findShortestPaths(va->id, rep)) return false;
+  if (va->id != vb->id && g->getShortestDistance(vb->id, rep) >= 1e6) return false;
+  g->getShortestPath(vb->id, rep, true, out);
+  return !out.empty();
+}
+
+static geometry_msgs::Pose poseAt(const Eigen::Vector3d& p,
+                                  const geometry_msgs::Quaternion& q) {
+  geometry_msgs::Pose o;
+  o.position.x = p.x(); o.position.y = p.y(); o.position.z = p.z();
+  o.orientation = q;
+  return o;
+}
+
 void Rrg::semanticsCallback(
     const planner_semantic_msgs::SemanticPoint& semantic) {
   // Non-blocking: the old version slept 50 s inside this callback (freezing
@@ -1111,11 +1139,21 @@ void Rrg::semanticsCallback(
   dst.orientation.w = 1.0;
 
   std::vector<geometry_msgs::Pose> approach;
-  const double d_direct =
-      (Eigen::Vector3d(dst.position.x, dst.position.y, dst.position.z) -
-       current_state_.head(3)).norm();
-  if (d_direct < 2.0 || (search(src, dst, true, approach) && !approach.empty())) {
-    if (approach.empty()) approach = {src, dst};
+  const Eigen::Vector3d here = current_state_.head(3);
+  const Eigen::Vector3d goal(dst.position.x, dst.position.y, dst.position.z);
+  std::vector<Eigen::Vector3d> gpath;
+  if ((goal - here).norm() < 2.0 ||
+      map_manager_->getPathStatus(here, goal, robot_box_size_, true) ==
+          MapManager::VoxelStatus::kFree) {
+    approach = {src, dst};
+  } else if (graphPathBetween(global_graph_, here, goal, gpath)) {
+    // Global graph: built from collision-checked exploration paths.
+    approach.push_back(src);
+    for (const auto& p : gpath) approach.push_back(poseAt(p, src.orientation));
+  } else if (!(search(src, dst, true, approach) && !approach.empty())) {
+    approach.clear();
+  }
+  if (!approach.empty()) {
     ROS_INFO("[INSPECTION] task (type %d) at (%.1f, %.1f, %.1f): approaching "
              "via %zu waypoints", insp_type_, obj[0], obj[1], obj[2],
              approach.size());
@@ -1158,9 +1196,11 @@ bool Rrg::publishInspectionPath(const std::vector<geometry_msgs::Pose>& path) {
   visualization_->visualizeRefPath(out);
   insp_goal_ = Eigen::Vector3d(out.back().position.x, out.back().position.y,
                                out.back().position.z);
-  insp_deadline_ = ros::Time::now() +
-                   ros::Duration(length / std::max(0.1, planning_params_.v_max) +
-                                 insp_timeout_margin_);
+  const double expected = length / std::max(0.1, planning_params_.v_max);
+  insp_deadline_ = ros::Time::now() + ros::Duration(expected + insp_timeout_margin_);
+  // A closed tour ends next to where it starts, so "at the end point" alone
+  // is not completion: also require most of the expected flight time.
+  insp_earliest_done_ = ros::Time::now() + ros::Duration(0.8 * expected);
   return true;
 }
 
@@ -1177,15 +1217,18 @@ std::vector<geometry_msgs::Pose> Rrg::makeTourCollisionFree(
     Eigen::Vector3d pa(a.position.x, a.position.y, a.position.z);
     Eigen::Vector3d pb(b.position.x, b.position.y, b.position.z);
     if ((pb - pa).norm() < 1e-3) continue;
-    if (map_manager_->getPathStatus(pa, pb, robot_box_size_, true) ==
-        MapManager::VoxelStatus::kFree) {
+    // Straight leg if nothing occupied lies in between (viewpoints often sit
+    // in still-unknown space around the object, so unknown is allowed).
+    if (map_manager_->getPathStatus(pa, pb, robot_box_size_, false) !=
+        MapManager::VoxelStatus::kOccupied) {
       out.push_back(b);
       continue;
     }
-    std::vector<geometry_msgs::Pose> leg;
-    if (search(a, b, false, leg) && leg.size() > 1) {
-      for (size_t k = 1; k < leg.size(); ++k) out.push_back(leg[k]);
-      out.back().orientation = b.orientation;  // keep viewpoint heading
+    // Otherwise route through the inspection graph (edges collision-checked).
+    std::vector<Eigen::Vector3d> leg;
+    if (graphPathBetween(exploration_graph_, pa, pb, leg) && leg.size() > 1) {
+      for (size_t k = 1; k < leg.size(); ++k) out.push_back(poseAt(leg[k], b.orientation));
+      out.push_back(b);
     } else {
       ROS_WARN("[INSPECTION] viewpoint %zu unreachable, skipped", i);
     }
@@ -1204,7 +1247,8 @@ void Rrg::finishInspection(bool success) {
 void Rrg::inspectionTimerCallback(const ros::TimerEvent&) {
   if (insp_state_ == InspectionState::kIdle) return;
   const bool reached =
-      (current_state_.head(3) - insp_goal_).norm() < insp_reach_tol_;
+      (current_state_.head(3) - insp_goal_).norm() < insp_reach_tol_ &&
+      ros::Time::now() >= insp_earliest_done_;
   const bool late = ros::Time::now() > insp_deadline_;
   if (!reached && !late) return;
 

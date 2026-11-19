@@ -55,6 +55,12 @@ class MaskRCNNNode(object):
         self._visualization = rospy.get_param('~visualization', True)
         self._publish_rate = rospy.get_param('~publish_rate', 10)
 
+        # TensorFlow grabs every core by default (it starved Gazebo and the
+        # planners); cap it before the model is built.
+        import tensorflow as tf
+        tf.config.threading.set_intra_op_parallelism_threads(int(rospy.get_param('~tf_threads', 4)))
+        tf.config.threading.set_inter_op_parallelism_threads(2)
+
         config = InferenceConfig()
         # Keep more than a couple of instances (ceiling/rotor false positives
         # used to crowd out the vehicles) and accept the lower scores that

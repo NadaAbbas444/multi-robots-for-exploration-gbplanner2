@@ -1,5 +1,7 @@
 # ICUAS 2025 multi-UAV exploration + semantic inspection on LARICS uav_ros_simulation.
 # Start inside the container with  start_sim  (workspace/bin/start_sim)
+# Position control and tracking use ground-truth odometry (paper assumption:
+# perfect localisation), bridged into the LARICS local frame by local_odom_bridge.
 # Environment variables (all optional):
 #   SCENARIO  cave (default) | tunnel | mine world to load
 #   WORLD     path to any .world             overrides SCENARIO
@@ -28,6 +30,7 @@
   uavs = [["red", 0, 0, 1, 9002], ["blue", 0, 3, 2, 9012]]
   uavs << ["yellow", 0, -3, 3, 9022] if three
   launch = three ? "icuas2025_three_uav.launch" : "icuas2025_two_uav.launch"
+  yaw = 90  # LARICS SITL local frame = world rotated +90 deg (measured); see local_odom_bridge.cpp
   spawn_args = uavs.map { |n, x, y, _, _| "#{n}_x:=#{x} #{n}_y:=#{y}" }.join(" ")
 %>
 name: icuas2025
@@ -56,14 +59,15 @@ windows:
       layout: tiled
       panes:
 <% uavs.each do |n, x, y, id, port| %>
-        - export UAV_NAMESPACE=<%= n %>; waitForRos; roslaunch uav_ros_control pid_carrot.launch
+        - waitForRos; rosrun gbplanner local_odom_bridge __name:=local_odom_bridge __ns:=<%= n %> _robot:=<%= n %> _offset_x:=<%= x %> _offset_y:=<%= y %> _yaw_deg:=<%= yaw %>
+        - export UAV_NAMESPACE=<%= n %>; waitForRos; sleep 2; roslaunch uav_ros_control pid_carrot.launch odometry:=odometry_local
         - export UAV_NAMESPACE=<%= n %>; rosrun ardupilot_gazebo automatic_takeoff.sh 1.5
 <% end %>
   - trajectory:
       layout: tiled
       panes:
 <% uavs.each do |n, x, y, id, port| %>
-        - export UAV_NAMESPACE=<%= n %>; waitForRos; roslaunch uav_ros_tracker topp_tracker.launch tracker_config:=$(rospack find gbplanner)/config/larics/topp_tracker.yaml
+        - export UAV_NAMESPACE=<%= n %>; waitForRos; roslaunch uav_ros_tracker topp_tracker.launch odom:=odometry_local tracker_config:=$(rospack find gbplanner)/config/larics/topp_tracker.yaml
 <% end %>
   - planner:
       layout: tiled

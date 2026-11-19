@@ -128,6 +128,7 @@ class DynamicTaskAllocator {
     std::deque<int> queue;  // task ids; front() is being inspected
     bool inspecting = false;
     bool exploring = true;
+    ros::Time ready_at;
     ros::ServiceClient toggle, stop, automatic;
     ros::Publisher task_pub;
     ros::Subscriber odom_sub, done_sub, sem_sub;
@@ -261,7 +262,15 @@ class DynamicTaskAllocator {
   void dispatch(Robot& r) {
     if (r.inspecting) return;
     if (!r.queue.empty()) {
-      if (r.exploring) setExploration(r, false);
+      if (r.exploring) {
+        // Stopping PCI makes it publish a "hold position" trajectory a moment
+        // later; sending the task right away let that hold override the
+        // inspection path. Pause first, dispatch on a later tick.
+        setExploration(r, false);
+        r.ready_at = ros::Time::now() + ros::Duration(2.0);
+        return;
+      }
+      if (ros::Time::now() < r.ready_at) return;
       const Task& t = tasks_[r.queue.front()];
       planner_semantic_msgs::SemanticPoint msg;
       msg.header.stamp = ros::Time::now();

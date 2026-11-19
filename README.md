@@ -118,6 +118,26 @@ it along the LKH tour, reports `done_inspection` and resumes exploring.
 - `use_central_frontier_assigner` (default `false`) re-enables the optional
   central `/assign_frontier` node (`p2p`).
 
+## Simulation notes
+
+Choices made to run the system faithfully on the LARICS ArduPilot simulator:
+
+- **Perfect localisation** (as assumed in the paper): the LARICS position
+  controller and trajectory tracker use Gazebo ground truth
+  (`local_odom_bridge`). ArduPilot's own SITL estimate drifts by about 1 m
+  through simulated GPS noise.
+- **1 kHz physics**: ArduPilot SITL needs 1 ms physics steps (`worlds/larics/`).
+- **Speed limits**: the tracker is capped at the paper's `v_max = 1 m/s`
+  (`config/larics/topp_tracker.yaml`). Yaw rate is 0.5 rad/s rather than the
+  paper's 0.15, so inspection tours, which turn toward the object at every
+  viewpoint, fit the ~110 s budget.
+- **Detection on rendered images**: Gazebo vehicles score lower than real ones.
+  The detector keeps up to 10 instances above 0.5, and an object is localised
+  above 0.6 (`~max_instances`, `~min_confidence`, `~min_score`). TensorFlow is
+  limited to 4 threads (`~tf_threads`) so it doesn't starve the simulator.
+- Simulation runs at about 0.5–0.9× real time on a laptop CPU. All timings are
+  in simulated time.
+
 ## Repository layout
 
 | Path | Content |
