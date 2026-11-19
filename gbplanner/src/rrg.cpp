@@ -553,6 +553,7 @@ ProjectedEdgeStatus Rrg::getProjectedEdgeStatus(
 }
 #include <algorithm>
 #include <unordered_set>
+#include <unordered_map>
 #include <Eigen/Dense>
 #include <geometry_msgs/Pose.h>
 #include <trajectory_msgs/MultiDOFJointTrajectory.h>
@@ -2447,6 +2448,11 @@ Rrg::GraphStatus Rrg::evaluateGraph() {
     ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Best path: with gain [%f] and ID [%d] ", best_gain, best_path_id);
     gstatus = Rrg::GraphStatus::OK;
 
+    // Share this iteration's key paths with peers (paper Sec. IV-A3: UAVs
+    // keep exchanging key paths as they explore). Previously only published
+    // at a dead end, so peers - e.g. idle inspectors - rarely got any.
+    publishGraph();
+
     add_frontiers_to_global_graph_ = true;
     visualization_->visualizeGlobalGraph(global_graph_);
   } else {
@@ -2921,31 +2927,33 @@ void Rrg::otherRobotGraphCallback(const planner_msgs::Graph& graph_msg) {
     
     // int frontier_count = 0;
 
-    // Find the maximum vertex ID in the current global graph
-    int max_id = 0;
-    for (int i = 0; i < global_graph_->getNumVertices(); ++i) {
-        Vertex* vertex = global_graph_->getVertex(i);
-        // if (global_graph_->getVertex(i)->type == VertexType::kFrontier) {  // Adjust 'Type' here as per actual field name
-        //     frontier_count++;}
-        if (vertex && vertex->id > max_id) {
-            max_id = vertex->id;
-        }
+    // Merge with fresh, contiguous IDs from the global graph's own counter.
+    // (The sender keeps sparse local IDs; the old code offset vertex IDs but
+    // not edge IDs, so edges pointed at missing vertices -> segfault in
+    // addEdge, and gaps broke loops over getVertex(0..N-1).)
+    planner_msgs::Graph remapped_graph = graph_msg;  // ids rewritten below
+    std::unordered_map<int, int> id_map;
+    for (auto& vm : remapped_graph.vertices) {
+        StateVec st(vm.pose.position.x, vm.pose.position.y, vm.pose.position.z,
+                    tf::getYaw(vm.pose.orientation));
+        const int new_id = global_graph_->generateVertexID();
+        Vertex* nv = new Vertex(new_id, st);
+        nv->vol_gain.num_unknown_voxels = vm.num_unknown_voxels;
+        nv->vol_gain.num_occupied_voxels = vm.num_occupied_voxels;
+        nv->vol_gain.num_free_voxels = vm.num_free_voxels;
+        nv->vol_gain.is_frontier = vm.is_frontier;
+        if (vm.is_frontier) nv->type = VertexType::kFrontier;
+        global_graph_->addVertex(nv);
+        id_map[vm.id] = new_id;
+        vm.id = new_id;
     }
-    // ROS_INFO_STREAM("Maximum vertex ID in global graph: " << max_id);
-    // ROS_INFO_STREAM(nh_.getNamespace() << ": before Receiving " << frontier_count << " originally");
-
-    // (Previously skipped when the own graph had only its root, so an
-    // inspector that had not moved yet never learned any peer path.)
-
-    // Remap vertex IDs in the incoming graph
-    planner_msgs::Graph remapped_graph = graph_msg;
-    for (auto& vertex : remapped_graph.vertices) {
-        vertex.id += (max_id + 1); // Increment by max_id + 1 to ensure uniqueness
-        // ROS_INFO_STREAM("Remapped incoming vertex ID from: " << vertex.id - (max_id + 1) << " to: " << vertex.id);
+    for (const auto& e : graph_msg.edges) {
+        auto a = id_map.find(e.source_id), b = id_map.find(e.target_id);
+        if (a == id_map.end() || b == id_map.end()) continue;
+        Vertex* va = global_graph_->getVertex(a->second);
+        Vertex* vb = global_graph_->getVertex(b->second);
+        if (va && vb) global_graph_->addEdge(va, vb, e.weight);
     }
-
-    // Convert the remapped graph to the global graph
-    global_graph_->convertMsgToGraph(remapped_graph);
 
     // Link the received key paths to the rest of the global graph: each new
     // vertex gets an edge to its nearest existing vertex within kLinkRadius
